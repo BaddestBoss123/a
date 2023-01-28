@@ -388,8 +388,9 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 
 			vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)GetProcAddress(vulkanModule, "vkGetInstanceProcAddr");
 
-			#define F(fn) fn = (PFN_##fn)vkGetInstanceProcAddr(instance, #fn);
+			#define F(fn) fn = (PFN_##fn)vkGetInstanceProcAddr(NULL, #fn);
 			BEFORE_INSTANCE_FUNCS(F)
+			#undef F
 
 			VkApplicationInfo applicationInfo = {
 				.sType              = VK_STRUCTURE_TYPE_APPLICATION_INFO,
@@ -444,7 +445,9 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 			if ((r = vkCreateInstance(&instanceCreateInfo, NULL, &instance) != VK_SUCCESS))
 				exitVk("vkCreateInstance");
 
+			#define F(fn) fn = (PFN_##fn)vkGetInstanceProcAddr(instance, #fn);
 			INSTANCE_FUNCS(F)
+			#undef F
 
 			if ((r = vkCreateWin32SurfaceKHR(instance, &(VkWin32SurfaceCreateInfoKHR){
 				.sType     = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
@@ -625,6 +628,7 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 			if ((r = vkCreateDevice(physicalDevice, &deviceCreateInfo, NULL, &device)) != VK_SUCCESS)
 				exitVk("vkCreateDevice");
 
+			#define F(fn) fn = (PFN_##fn)vkGetDeviceProcAddr(device, #fn);
 			DEVICE_FUNCS(F)
 			#undef F
 
@@ -757,7 +761,7 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 					exitVk("vkAcquireFullScreenExclusiveModeEXT");
 			}
 
-			if (swapchainCreateInfo.oldSwapchain == VK_NULL_HANDLE) {
+			if (swapchainCreateInfo.oldSwapchain != VK_NULL_HANDLE) {
 				if ((r = vkDeviceWaitIdle(device)) != VK_SUCCESS)
 					exitVk("vkDeviceWaitIdle");
 
