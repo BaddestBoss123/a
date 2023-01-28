@@ -28,7 +28,7 @@
 	(threadCount + localSize - 1) / localSize;     \
 })
 
-#define BEFORE_INSTANCE_FUNCS(F)                 \
+#define BEFORE_INSTANCE_FUNCS(F)              \
 	F(vkEnumerateInstanceExtensionProperties) \
 	F(vkEnumerateInstanceVersion)             \
 	F(vkCreateInstance)
@@ -120,6 +120,7 @@
 	F(vkQueuePresentKHR)                   \
 	F(vkQueueSubmit)                       \
 	F(vkQueueWaitIdle)                     \
+	F(vkReleaseFullScreenExclusiveModeEXT) \
 	F(vkResetCommandPool)                  \
 	F(vkResetFences)                       \
 	F(vkUpdateDescriptorSets)              \
@@ -246,7 +247,6 @@ static VkPhysicalDeviceProperties2 physicalDeviceProperties2 = {
 };
 
 static VkResult r;
-static VkInstance instance;
 static VkDevice device;
 static VkPhysicalDevice physicalDevice;
 static VkPhysicalDeviceMemoryProperties physicalDeviceMemoryProperties;
@@ -442,6 +442,7 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 				}
 			}
 
+			VkInstance instance;
 			if ((r = vkCreateInstance(&instanceCreateInfo, NULL, &instance) != VK_SUCCESS))
 				exitVk("vkCreateInstance");
 
@@ -538,10 +539,10 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 
 			const char* enabledDeviceExtensions[16];
 			const char* wantedDeviceExtensions[16] = {
-				VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME,
+				// VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME,
 				VK_KHR_SWAPCHAIN_EXTENSION_NAME
 			};
-			uint32_t wantedDeviceExtensionsCount = 2;
+			uint32_t wantedDeviceExtensionsCount = 1;
 
 			VkDeviceCreateInfo deviceCreateInfo = {
 				.sType                   = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
@@ -692,33 +693,17 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 			static VkImageView swapchainImageViews[8];
 			static uint32_t swapchainImagesCount;
 
-			VkSurfaceCapabilitiesFullScreenExclusiveEXT surfaceCapabilitiesFullScreenExclusive = {
-				.sType = VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_FULL_SCREEN_EXCLUSIVE_EXT
-			};
+			VkSurfaceCapabilitiesKHR surfaceCapabilities;
+			if ((r = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, &surfaceCapabilities)) != VK_SUCCESS)
+				exitVk("vkGetPhysicalDeviceSurfaceCapabilitiesKHR");
 
-			VkSurfaceCapabilities2KHR surfaceCapabilities2 = {
-				.sType = VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_2_KHR,
-				.pNext = &surfaceCapabilitiesFullScreenExclusive
-			};
-
-			if (vkGetPhysicalDeviceSurfaceCapabilities2KHR) {
-				if ((r = vkGetPhysicalDeviceSurfaceCapabilities2KHR(physicalDevice, &(VkPhysicalDeviceSurfaceInfo2KHR){
-					.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SURFACE_INFO_2_KHR,
-					.surface = surface
-				}, &surfaceCapabilities2)) != VK_SUCCESS)
-					exitVk("vkGetPhysicalDeviceSurfaceCapabilities2KHR");
-			} else {
-				if ((r = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, &surfaceCapabilities2.surfaceCapabilities)) != VK_SUCCESS)
-					exitVk("vkGetPhysicalDeviceSurfaceCapabilitiesKHR");
-			}
-
-			if (surfaceCapabilities2.surfaceCapabilities.currentExtent.width == 0 || surfaceCapabilities2.surfaceCapabilities.currentExtent.height == 0) {
+			if (surfaceCapabilities.currentExtent.width == 0 || surfaceCapabilities.currentExtent.height == 0) {
 				// TODO
 			}
 
-			scissor.extent  = surfaceCapabilities2.surfaceCapabilities.currentExtent;
-			viewport.width  = (float)surfaceCapabilities2.surfaceCapabilities.currentExtent.width;
-			viewport.height = (float)surfaceCapabilities2.surfaceCapabilities.currentExtent.height;
+			scissor.extent  = surfaceCapabilities.currentExtent;
+			viewport.width  = (float)surfaceCapabilities.currentExtent.width;
+			viewport.height = (float)surfaceCapabilities.currentExtent.height;
 
 			float f                = 1.f / tanf(cameraFieldOfView / 2.f);
 			projectionMatrix[0][0] = f / (viewport.width / viewport.height);
@@ -728,38 +713,22 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 
 			VkSwapchainCreateInfoKHR swapchainCreateInfo = {
 				.sType            = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
-				.pNext            = &(VkSurfaceFullScreenExclusiveInfoEXT){
-					.sType               = VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_INFO_EXT,
-					.pNext               = &(VkSurfaceFullScreenExclusiveWin32InfoEXT){
-						.sType    = VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_WIN32_INFO_EXT,
-						.hmonitor = MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST)
-					},
-					.fullScreenExclusive = VK_FULL_SCREEN_EXCLUSIVE_APPLICATION_CONTROLLED_EXT
-				},
 				.surface          = surface,
-				.minImageCount    = surfaceCapabilities2.surfaceCapabilities.minImageCount + 1,
+				.minImageCount    = surfaceCapabilities.minImageCount + 1,
 				.imageFormat      = surfaceFormat.format,
 				.imageColorSpace  = surfaceFormat.colorSpace,
-				.imageExtent      = surfaceCapabilities2.surfaceCapabilities.currentExtent,
+				.imageExtent      = scissor.extent,
 				.imageArrayLayers = 1,
 				.imageUsage       = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
 				.compositeAlpha   = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
 				.presentMode      = VK_PRESENT_MODE_FIFO_KHR,
-				.preTransform     = surfaceCapabilities2.surfaceCapabilities.currentTransform,
+				.preTransform     = surfaceCapabilities.currentTransform,
 				.clipped          = VK_TRUE,
 				.oldSwapchain     = swapchain
 			};
 
 			if ((r = vkCreateSwapchainKHR(device, &swapchainCreateInfo, NULL, &swapchain)) != VK_SUCCESS)
 				exitVk("vkCreateSwapchainKHR");
-
-			char test[128];
-			sprintf(test, "exclusive: %i\n", surfaceCapabilitiesFullScreenExclusive.fullScreenExclusiveSupported);
-			OutputDebugStringA(test);
-			if (surfaceCapabilitiesFullScreenExclusive.fullScreenExclusiveSupported) {
-				if ((r = vkAcquireFullScreenExclusiveModeEXT(device, swapchain)) != VK_SUCCESS)
-					exitVk("vkAcquireFullScreenExclusiveModeEXT");
-			}
 
 			if (swapchainCreateInfo.oldSwapchain != VK_NULL_HANDLE) {
 				if ((r = vkDeviceWaitIdle(device)) != VK_SUCCESS)
@@ -786,8 +755,8 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 				.imageType    = VK_IMAGE_TYPE_2D,
 				.format       = VK_FORMAT_D24_UNORM_S8_UINT,
 				.extent       = {
-					.width  = surfaceCapabilities2.surfaceCapabilities.currentExtent.width,
-					.height = surfaceCapabilities2.surfaceCapabilities.currentExtent.height,
+					.width  = scissor.extent.width,
+					.height = scissor.extent.height,
 					.depth  = 1
 				},
 				.mipLevels    = 1,
@@ -872,8 +841,8 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 						swapchainImageViews[i],
 						depthImageView
 					},
-					.width           = surfaceCapabilities2.surfaceCapabilities.currentExtent.width,
-					.height          = surfaceCapabilities2.surfaceCapabilities.currentExtent.height,
+					.width           = surfaceCapabilities.currentExtent.width,
+					.height          = surfaceCapabilities.currentExtent.height,
 					.layers          = 1
 				}, NULL, &swapchainFramebuffers[i])) != VK_SUCCESS)
 					exitVk("vkCreateFramebuffer");
@@ -881,7 +850,9 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 		} break;
 		case WM_ACTIVATE: {
 			if (wParam == WA_INACTIVE) {
-				// TODO
+
+			} else {
+
 			}
 		} break;
 		case WM_CLOSE: {
@@ -920,11 +891,11 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 				case VK_F11: {
 					static WINDOWPLACEMENT previous = { sizeof(WINDOWPLACEMENT) };
 
-					LONG_PTR dwStyle = GetWindowLongPtrW(hWnd, GWL_STYLE);
-					if (!dwStyle)
+					LONG_PTR style = GetWindowLongPtrW(hWnd, GWL_STYLE);
+					if (!style)
 						exitWin32("GetWindowLongPtrW");
 
-					if (dwStyle & WS_OVERLAPPEDWINDOW) {
+					if (style & WS_OVERLAPPEDWINDOW) {
 						MONITORINFO current = { sizeof(MONITORINFO) };
 						if (!GetWindowPlacement(hWnd, &previous))
 							exitWin32("GetWindowPlacement");
@@ -932,7 +903,7 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 						if (!GetMonitorInfoW(MonitorFromWindow(hWnd, MONITOR_DEFAULTTOPRIMARY), &current))
 							exitWin32("GetMonitorInfoW");
 
-						if (!SetWindowLongPtrW(hWnd, GWL_STYLE, dwStyle & ~WS_OVERLAPPEDWINDOW))
+						if (!SetWindowLongPtrW(hWnd, GWL_STYLE, style & ~WS_OVERLAPPEDWINDOW))
 							exitWin32("SetWindowLongPtrW");
 
 						if (!SetWindowPos(hWnd, HWND_TOP, current.rcMonitor.left, current.rcMonitor.top, current.rcMonitor.right - current.rcMonitor.left, current.rcMonitor.bottom - current.rcMonitor.top, SWP_NOOWNERZORDER | SWP_FRAMECHANGED))
@@ -941,7 +912,7 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 						if (!SetWindowPlacement(hWnd, &previous))
 							exitWin32("SetWindowPlacement");
 
-						if (!SetWindowLongPtrW(hWnd, GWL_STYLE, dwStyle | WS_OVERLAPPEDWINDOW))
+						if (!SetWindowLongPtrW(hWnd, GWL_STYLE, style | WS_OVERLAPPEDWINDOW))
 							exitWin32("SetWindowLongPtrW");
 
 						if (!SetWindowPos(hWnd, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED))
@@ -978,9 +949,6 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 				exitWin32("KillTimer");
 		} break;
 		default: {
-			// char wtf[1024];
-			// sprintf(wtf, "%p %d %zu %zu\n", hWnd, msg, wParam, lParam);
-			// OutputDebugStringA(wtf);
 			return DefWindowProcW(hWnd, msg, wParam, lParam);
 		} break;
 	}
@@ -1170,6 +1138,7 @@ void WinMainCRTStartup(void) {
 		};
 		VkPipelineMultisampleStateCreateInfo multisampleState = {
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+			.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT
 		};
 		VkPipelineDepthStencilStateCreateInfo depthStencilState = {
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
@@ -1368,6 +1337,9 @@ void WinMainCRTStartup(void) {
 		if ((r = vkWaitForFences(device, 1, &fences[frame], VK_TRUE, UINT64_MAX)) != VK_SUCCESS)
 			exitVk("vkWaitForFences");
 
+		if ((r = vkResetFences(device, 1, &fences[frame])) != VK_SUCCESS)
+			exitVk("vkResetFences");
+
 		if ((r = vkResetCommandPool(device, commandPools[frame], 0)) != VK_SUCCESS)
 			exitVk("vkResetCommandPool");
 
@@ -1417,7 +1389,7 @@ void WinMainCRTStartup(void) {
 		viewMatrix[3][3] = 1.f;
 
 		Mat4 viewProjection = projectionMatrix * viewMatrix;
-		vkCmdPushConstants(commandBuffers[frame], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, 1, &viewProjection);
+		vkCmdPushConstants(commandBuffers[frame], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Mat4), &viewProjection);
 
 		vkCmdBindPipeline(commandBuffers[frame], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_TRIANGLE]);
 		vkCmdDraw(commandBuffers[frame], 3, 1, 0, 0);
