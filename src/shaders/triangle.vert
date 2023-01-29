@@ -11,5 +11,5 @@ layout(push_constant) uniform PushConstants {
 } pushConstants;
 
 void main() {
-	gl_Position = vec4(positions[gl_VertexIndex], 0.0, 1.0);
+	gl_Position = pushConstants.viewProjection * vec4(positions[gl_VertexIndex], -1.0, 1.0);
 }

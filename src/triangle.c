@@ -144,6 +144,7 @@ typedef enum Input {
 
 typedef enum GraphicsPipelines {
 	GRAPHICS_PIPELINE_TRIANGLE,
+	GRAPHICS_PIPELINE_SKYBOX,
 	GRAPHICS_PIPELINE_MAX
 } GraphicsPipelines;
 
@@ -258,7 +259,10 @@ static VkSurfaceFormatKHR surfaceFormat;
 static VkSwapchainKHR swapchain;
 static VkFramebuffer swapchainFramebuffers[8];
 static VkRect2D scissor;
-static VkViewport viewport;
+static VkViewport viewport = {
+	.minDepth = 0.0,
+	.maxDepth = 1.0
+};
 
 static HMODULE hInstance;
 static LPVOID mainFiber;
@@ -378,11 +382,11 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 				.usUsagePage = HID_USAGE_PAGE_GENERIC,
 				.usUsage     = HID_USAGE_GENERIC_MOUSE,
 				.dwFlags     = 0,
-				.hwndTarget	 = hWnd
+				.hwndTarget  = hWnd
 			}, 1, sizeof(RAWINPUTDEVICE)))
 				exitWin32("RegisterRawInputDevices");
 
-			HMODULE vulkanModule  = LoadLibraryW(L"vulkan-1.dll");
+			HMODULE vulkanModule = LoadLibraryW(L"vulkan-1.dll");
 			if (!vulkanModule)
 				exitWin32("LoadLibraryW");
 
@@ -640,7 +644,7 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 					{
 						.format         = surfaceFormat.format,
 						.samples        = VK_SAMPLE_COUNT_1_BIT,
-						.loadOp         = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+						.loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR,//DONT_CARE,
 						.storeOp        = VK_ATTACHMENT_STORE_OP_STORE,
 						.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
 						.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
@@ -708,8 +712,8 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 			float f                = 1.f / tanf(cameraFieldOfView / 2.f);
 			projectionMatrix[0][0] = f / (viewport.width / viewport.height);
 			projectionMatrix[1][1] = -f;
-			projectionMatrix[3][2] = -1.f;
 			projectionMatrix[2][3] = cameraNear;
+			projectionMatrix[3][2] = -1.f;
 
 			VkSwapchainCreateInfoKHR swapchainCreateInfo = {
 				.sType            = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
@@ -776,26 +780,26 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 				.pNext = &memoryDedicatedRequirements
 			};
 
-			VkMemoryDedicatedAllocateInfo memoryDedicatedAllocateInfo = {
-				.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
-				.image = depthImage
-			};
+			// VkMemoryDedicatedAllocateInfo memoryDedicatedAllocateInfo = {
+			// 	.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
+			// 	.image = depthImage
+			// };
 
 			VkMemoryAllocateInfo memoryAllocateInfo = {
 				.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO
 			};
 
-			if (vkGetImageMemoryRequirements2 || vkGetImageMemoryRequirements2KHR) {
-				(vkGetImageMemoryRequirements2 ? vkGetImageMemoryRequirements2 : vkGetImageMemoryRequirements2KHR)(device, &(VkImageMemoryRequirementsInfo2){
-					.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2,
-					.image = depthImage
-				}, &memoryRequirements2);
+			// if (vkGetImageMemoryRequirements2 || vkGetImageMemoryRequirements2KHR) {
+			// 	(vkGetImageMemoryRequirements2 ? vkGetImageMemoryRequirements2 : vkGetImageMemoryRequirements2KHR)(device, &(VkImageMemoryRequirementsInfo2){
+			// 		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2,
+			// 		.image = depthImage
+			// 	}, &memoryRequirements2);
 
-				if (memoryDedicatedRequirements.prefersDedicatedAllocation)
-					memoryAllocateInfo.pNext = &memoryDedicatedAllocateInfo;
-			} else {
+			// 	if (memoryDedicatedRequirements.prefersDedicatedAllocation)
+			// 		memoryAllocateInfo.pNext = &memoryDedicatedAllocateInfo;
+			// } else {
 				vkGetImageMemoryRequirements(device, depthImage, &memoryRequirements2.memoryRequirements);
-			}
+			// }
 
 			memoryAllocateInfo.allocationSize  = memoryRequirements2.memoryRequirements.size;
 			memoryAllocateInfo.memoryTypeIndex = getMemoryTypeIndex(memoryRequirements2.memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0);
@@ -1085,9 +1089,13 @@ void WinMainCRTStartup(void) {
 	{
 		#include "shaders/triangle.vert.h"
 		#include "shaders/triangle.frag.h"
+		#include "shaders/skybox.vert.h"
+		#include "shaders/skybox.frag.h"
 
 		VkShaderModule triangleVert;
 		VkShaderModule triangleFrag;
+		VkShaderModule skyboxVert;
+		VkShaderModule skyboxFrag;
 
 		if ((r = vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
 			.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
@@ -1103,7 +1111,21 @@ void WinMainCRTStartup(void) {
 		}, NULL, &triangleFrag)) != VK_SUCCESS)
 			exitVk("vkCreateShaderModule");
 
-		VkPipelineShaderStageCreateInfo shaderStages[] = {
+		if ((r = vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
+			.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+			.pCode    = skybox_vert,
+			.codeSize = sizeof(skybox_vert)
+		}, NULL, &skyboxVert)) != VK_SUCCESS)
+			exitVk("vkCreateShaderModule");
+
+		if ((r = vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
+			.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+			.pCode    = skybox_frag,
+			.codeSize = sizeof(skybox_frag)
+		}, NULL, &skyboxFrag)) != VK_SUCCESS)
+			exitVk("vkCreateShaderModule");
+
+		VkPipelineShaderStageCreateInfo shaderStagesTriangle[] = {
 			{
 				.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 				.stage  = VK_SHADER_STAGE_VERTEX_BIT,
@@ -1113,6 +1135,19 @@ void WinMainCRTStartup(void) {
 				.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 				.stage  = VK_SHADER_STAGE_FRAGMENT_BIT,
 				.module = triangleFrag,
+				.pName  = "main"
+			}
+		};
+		VkPipelineShaderStageCreateInfo shaderStagesSkybox[] = {
+			{
+				.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+				.stage  = VK_SHADER_STAGE_VERTEX_BIT,
+				.module = skyboxVert,
+				.pName  = "main"
+			}, {
+				.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+				.stage  = VK_SHADER_STAGE_FRAGMENT_BIT,
+				.module = skyboxFrag,
 				.pName  = "main"
 			}
 		};
@@ -1142,6 +1177,14 @@ void WinMainCRTStartup(void) {
 		};
 		VkPipelineDepthStencilStateCreateInfo depthStencilState = {
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+			.depthTestEnable = VK_TRUE,
+			.depthWriteEnable = VK_TRUE,
+			.depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL
+		};
+		VkPipelineDepthStencilStateCreateInfo depthStencilStateSkybox = {
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+			.depthTestEnable = VK_TRUE,
+			.depthCompareOp = VK_COMPARE_OP_EQUAL
 		};
 		VkPipelineColorBlendStateCreateInfo colorBlendState = {
 			.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
@@ -1162,14 +1205,28 @@ void WinMainCRTStartup(void) {
 		if ((r = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, GRAPHICS_PIPELINE_MAX, (VkGraphicsPipelineCreateInfo[]){
 			[GRAPHICS_PIPELINE_TRIANGLE] = {
 				.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-				.stageCount          = ARRAY_COUNT(shaderStages),
-				.pStages             = shaderStages,
+				.stageCount          = ARRAY_COUNT(shaderStagesTriangle),
+				.pStages             = shaderStagesTriangle,
 				.pVertexInputState   = &vertexInputState,
 				.pInputAssemblyState = &inputAssemblyState,
 				.pViewportState      = &viewportState,
 				.pRasterizationState = &rasterizationState,
 				.pMultisampleState   = &multisampleState,
 				.pDepthStencilState  = &depthStencilState,
+				.pColorBlendState    = &colorBlendState,
+				.pDynamicState       = &dynamicState,
+				.layout              = pipelineLayout,
+				.renderPass          = renderPass
+			}, [GRAPHICS_PIPELINE_SKYBOX] = {
+				.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+				.stageCount          = ARRAY_COUNT(shaderStagesSkybox),
+				.pStages             = shaderStagesSkybox,
+				.pVertexInputState   = &vertexInputState,
+				.pInputAssemblyState = &inputAssemblyState,
+				.pViewportState      = &viewportState,
+				.pRasterizationState = &rasterizationState,
+				.pMultisampleState   = &multisampleState,
+				.pDepthStencilState  = &depthStencilStateSkybox,
 				.pColorBlendState    = &colorBlendState,
 				.pDynamicState       = &dynamicState,
 				.layout              = pipelineLayout,
@@ -1392,6 +1449,9 @@ void WinMainCRTStartup(void) {
 		vkCmdPushConstants(commandBuffers[frame], pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Mat4), &viewProjection);
 
 		vkCmdBindPipeline(commandBuffers[frame], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_TRIANGLE]);
+		vkCmdDraw(commandBuffers[frame], 3, 1, 0, 0);
+
+		vkCmdBindPipeline(commandBuffers[frame], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_SKYBOX]);
 		vkCmdDraw(commandBuffers[frame], 3, 1, 0, 0);
 
 		vkCmdEndRenderPass(commandBuffers[frame]);
