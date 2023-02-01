@@ -145,15 +145,22 @@ typedef enum Input {
 typedef enum GraphicsPipelines {
 	GRAPHICS_PIPELINE_TRIANGLE,
 	GRAPHICS_PIPELINE_SKYBOX,
+	GRAPHICS_PIPELINE_VOXEL,
 	GRAPHICS_PIPELINE_MAX
 } GraphicsPipelines;
 
 typedef enum Buffers {
+	BUFFER_STAGING,
 	BUFFER_INDICES,
 	BUFFER_VERTICES,
 	BUFFER_UNIFORM,
 	BUFFER_MAX
 } Buffers;
+
+typedef enum BufferOffsets {
+	BUFFER_OFFSET_QUAD_INDICES,
+	BUFFER_OFFSET_MAX
+} BufferOffsets;
 
 typedef struct KTX2 {
 	char identifier[12];
@@ -454,6 +461,8 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 			INSTANCE_FUNCS(F)
 			#undef F
 
+			if (!vkGetPhysicalDeviceProperties2) vkGetPhysicalDeviceProperties2 = vkGetPhysicalDeviceProperties2KHR;
+
 			if ((r = vkCreateWin32SurfaceKHR(instance, &(VkWin32SurfaceCreateInfoKHR){
 				.sType     = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
 				.hinstance = hInstance,
@@ -559,10 +568,6 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 				vkGetPhysicalDeviceProperties2(physicalDevice, &physicalDeviceProperties2);
 				vkGetPhysicalDeviceFeatures2(physicalDevice, &availablePhysicalDeviceFeatures2);
 				deviceCreateInfo.pNext = &enabledPhysicalDeviceFeatures2;
-			} else if (vkGetPhysicalDeviceProperties2KHR) {
-				vkGetPhysicalDeviceProperties2KHR(physicalDevice, &physicalDeviceProperties2);
-				vkGetPhysicalDeviceFeatures2KHR(physicalDevice, &availablePhysicalDeviceFeatures2);
-				deviceCreateInfo.pNext = &enabledPhysicalDeviceFeatures2;
 			} else {
 				vkGetPhysicalDeviceProperties(physicalDevice, &physicalDeviceProperties2.properties);
 				vkGetPhysicalDeviceFeatures(physicalDevice, &availablePhysicalDeviceFeatures2.features);
@@ -637,6 +642,9 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 			DEVICE_FUNCS(F)
 			#undef F
 
+			if (!vkGetBufferMemoryRequirements2) vkGetBufferMemoryRequirements2 = vkGetBufferMemoryRequirements2KHR;
+			if (!vkGetImageMemoryRequirements2) vkGetImageMemoryRequirements2 = vkGetImageMemoryRequirements2KHR;
+
 			if ((r = vkCreateRenderPass(device, &(VkRenderPassCreateInfo){
 				.sType             = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
 				.attachmentCount   = 2,
@@ -644,7 +652,7 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 					{
 						.format         = surfaceFormat.format,
 						.samples        = VK_SAMPLE_COUNT_1_BIT,
-						.loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR,//DONT_CARE,
+						.loadOp         = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
 						.storeOp        = VK_ATTACHMENT_STORE_OP_STORE,
 						.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
 						.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
@@ -780,26 +788,26 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 				.pNext = &memoryDedicatedRequirements
 			};
 
-			// VkMemoryDedicatedAllocateInfo memoryDedicatedAllocateInfo = {
-			// 	.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
-			// 	.image = depthImage
-			// };
+			VkMemoryDedicatedAllocateInfo memoryDedicatedAllocateInfo = {
+				.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
+				.image = depthImage
+			};
 
 			VkMemoryAllocateInfo memoryAllocateInfo = {
 				.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO
 			};
 
-			// if (vkGetImageMemoryRequirements2 || vkGetImageMemoryRequirements2KHR) {
-			// 	(vkGetImageMemoryRequirements2 ? vkGetImageMemoryRequirements2 : vkGetImageMemoryRequirements2KHR)(device, &(VkImageMemoryRequirementsInfo2){
-			// 		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2,
-			// 		.image = depthImage
-			// 	}, &memoryRequirements2);
+			if (vkGetImageMemoryRequirements2) {
+				vkGetImageMemoryRequirements2(device, &(VkImageMemoryRequirementsInfo2){
+					.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2,
+					.image = depthImage
+				}, &memoryRequirements2);
 
-			// 	if (memoryDedicatedRequirements.prefersDedicatedAllocation)
-			// 		memoryAllocateInfo.pNext = &memoryDedicatedAllocateInfo;
-			// } else {
+				if (memoryDedicatedRequirements.prefersDedicatedAllocation)
+					memoryAllocateInfo.pNext = &memoryDedicatedAllocateInfo;
+			} else {
 				vkGetImageMemoryRequirements(device, depthImage, &memoryRequirements2.memoryRequirements);
-			// }
+			}
 
 			memoryAllocateInfo.allocationSize  = memoryRequirements2.memoryRequirements.size;
 			memoryAllocateInfo.memoryTypeIndex = getMemoryTypeIndex(memoryRequirements2.memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0);
@@ -1039,7 +1047,6 @@ void WinMainCRTStartup(void) {
 	VkQueue queues[2];
 	VkSemaphore imageAcquireSemaphores[FRAMES_IN_FLIGHT];
 	VkSemaphore semaphores[FRAMES_IN_FLIGHT];
-	VkBuffer buffers[BUFFER_MAX];
 
 	vkGetDeviceQueue(device, queueFamilyIndex, 0, &queues[0]);
 	vkGetDeviceQueue(device, queueFamilyIndex, queueCount - 1, &queues[1]);
@@ -1060,7 +1067,7 @@ void WinMainCRTStartup(void) {
 
 		if ((r = vkCreateFence(device, &(VkFenceCreateInfo){
 			.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
-			.flags = VK_FENCE_CREATE_SIGNALED_BIT
+			.flags = i > 0 ? VK_FENCE_CREATE_SIGNALED_BIT : 0
 		}, NULL, &fences[i])) != VK_SUCCESS)
 			exitVk("vkCreateFence");
 
@@ -1091,11 +1098,13 @@ void WinMainCRTStartup(void) {
 		#include "shaders/triangle.frag.h"
 		#include "shaders/skybox.vert.h"
 		#include "shaders/skybox.frag.h"
+		#include "shaders/voxel.vert.h"
 
 		VkShaderModule triangleVert;
 		VkShaderModule triangleFrag;
 		VkShaderModule skyboxVert;
 		VkShaderModule skyboxFrag;
+		VkShaderModule voxelVert;
 
 		if ((r = vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
 			.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
@@ -1125,6 +1134,13 @@ void WinMainCRTStartup(void) {
 		}, NULL, &skyboxFrag)) != VK_SUCCESS)
 			exitVk("vkCreateShaderModule");
 
+		if ((r = vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
+			.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+			.pCode    = voxel_vert,
+			.codeSize = sizeof(voxel_vert)
+		}, NULL, &voxelVert)) != VK_SUCCESS)
+			exitVk("vkCreateShaderModule");
+
 		VkPipelineShaderStageCreateInfo shaderStagesTriangle[] = {
 			{
 				.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -1148,6 +1164,19 @@ void WinMainCRTStartup(void) {
 				.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 				.stage  = VK_SHADER_STAGE_FRAGMENT_BIT,
 				.module = skyboxFrag,
+				.pName  = "main"
+			}
+		};
+		VkPipelineShaderStageCreateInfo shaderStagesVoxel[] = {
+			{
+				.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+				.stage  = VK_SHADER_STAGE_VERTEX_BIT,
+				.module = voxelVert,
+				.pName  = "main"
+			}, {
+				.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+				.stage  = VK_SHADER_STAGE_FRAGMENT_BIT,
+				.module = triangleFrag,
 				.pName  = "main"
 			}
 		};
@@ -1231,89 +1260,131 @@ void WinMainCRTStartup(void) {
 				.pDynamicState       = &dynamicState,
 				.layout              = pipelineLayout,
 				.renderPass          = renderPass
+			}, [GRAPHICS_PIPELINE_VOXEL] = {
+				.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+				.stageCount          = ARRAY_COUNT(shaderStagesVoxel),
+				.pStages             = shaderStagesVoxel,
+				.pVertexInputState   = &vertexInputState,
+				.pInputAssemblyState = &inputAssemblyState,
+				.pViewportState      = &viewportState,
+				.pRasterizationState = &rasterizationState,
+				.pMultisampleState   = &multisampleState,
+				.pDepthStencilState  = &depthStencilState,
+				.pColorBlendState    = &colorBlendState,
+				.pDynamicState       = &dynamicState,
+				.layout              = pipelineLayout,
+				.renderPass          = renderPass
 			}
 		}, NULL, graphicsPipelines)) != VK_SUCCESS)
 			exitVk("vkCreateGraphicsPipelines");
 	}
 
-	{
-		float vertexPositions[] = {
-			0.0, -0.5, 0.0,
-			0.5, 0.5, 0.0,
-			-0.5, 0.5, 0.0
-		};
-		uint16_t indices[48];
+	float vertexPositions[] = {
+		0.0, -0.5, 0.0,
+		0.5, 0.5, 0.0,
+		-0.5, 0.5, 0.0
+	};
+	uint16_t quadIndices[48];
+	for (uint32_t i = 0; i < 48; i += 6) {
+		quadIndices[i + 0] = (4 * (i / 6)) + 0;
+		quadIndices[i + 1] = (4 * (i / 6)) + 1;
+		quadIndices[i + 2] = (4 * (i / 6)) + 2;
+		quadIndices[i + 3] = (4 * (i / 6)) + 0;
+		quadIndices[i + 4] = (4 * (i / 6)) + 2;
+		quadIndices[i + 5] = (4 * (i / 6)) + 3;
+	}
 
-		struct {
-			VkDeviceSize size;
-			VkBufferUsageFlags usage;
-			VkMemoryPropertyFlags requiredMemoryPropertyFlagBits;
-			VkMemoryPropertyFlags optionalMemoryPropertyFlagBits;
-		} bufferInfos[BUFFER_MAX] = {
-			[BUFFER_INDICES] = {
-				.size                           = sizeof(indices),
-				.usage                          = VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-				.requiredMemoryPropertyFlagBits = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
-			}, [BUFFER_VERTICES] = {
-				.size                           = sizeof(vertexPositions),
-				.usage                          = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-				.requiredMemoryPropertyFlagBits = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
-			}, [BUFFER_UNIFORM] = {
-				.size                           = 1024,
-				.usage                          = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-				.requiredMemoryPropertyFlagBits = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-				.optionalMemoryPropertyFlagBits = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
-			}
-		};
+	static VkDeviceSize bufferOffsets[BUFFER_OFFSET_MAX] = {
+		[BUFFER_OFFSET_QUAD_INDICES] = 0
+	};
 
-		for (uint32_t i = 0; i < BUFFER_MAX; i++) {
-			if ((r = vkCreateBuffer(device, &(VkBufferCreateInfo){
-				.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-				.size  = bufferInfos[i].size,
-				.usage = bufferInfos[i].usage
-			}, NULL, &buffers[i])) != VK_SUCCESS)
-				exitVk("vkCreateBuffer");
+	struct {
+		VkDeviceSize size;
+		VkBufferUsageFlags usage;
+		VkMemoryPropertyFlags requiredMemoryPropertyFlagBits;
+		VkMemoryPropertyFlags optionalMemoryPropertyFlagBits;
+		VkDeviceMemory deviceMemory;
+		VkBuffer buffer;
+		void* data;
+	} buffers[BUFFER_MAX] = {
+		[BUFFER_STAGING] = {
+			.size                           = 32 * 1024 * 1024,
+			.usage                          = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+			.requiredMemoryPropertyFlagBits = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+		}, [BUFFER_INDICES] = {
+			.size                           = sizeof(quadIndices),
+			.usage                          = VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+			.requiredMemoryPropertyFlagBits = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+		}, [BUFFER_VERTICES] = {
+			.size                           = sizeof(vertexPositions),
+			.usage                          = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+			.requiredMemoryPropertyFlagBits = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+		}, [BUFFER_UNIFORM] = {
+			.size                           = 1024,
+			.usage                          = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+			.requiredMemoryPropertyFlagBits = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+			.optionalMemoryPropertyFlagBits = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+		}
+	};
 
-			VkMemoryRequirements2 memoryRequirements2 = {
-				.sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2
-			};
+	for (uint32_t i = 0; i < BUFFER_MAX; i++) {
+		if ((r = vkCreateBuffer(device, &(VkBufferCreateInfo){
+			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+			.size  = buffers[i].size,
+			.usage = buffers[i].usage
+		}, NULL, &buffers[i].buffer)) != VK_SUCCESS)
+			exitVk("vkCreateBuffer");
 
-			if (vkGetBufferMemoryRequirements2 || vkGetBufferMemoryRequirements2KHR) {
-				VkMemoryDedicatedRequirements memoryDedicatedRequirements = {
-					.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS
-				};
-				memoryRequirements2.pNext = &memoryDedicatedRequirements;
+		VkMemoryRequirements memoryRequirements;
+		vkGetBufferMemoryRequirements(device, buffers[i].buffer, &memoryRequirements);
 
-				(vkGetBufferMemoryRequirements2 ? vkGetBufferMemoryRequirements2 : vkGetBufferMemoryRequirements2KHR) (device, &(VkBufferMemoryRequirementsInfo2){
-					.sType  = VK_STRUCTURE_TYPE_BUFFER_MEMORY_REQUIREMENTS_INFO_2,
-					.buffer = buffers[i]
-				}, &memoryRequirements2);
+		if ((r = vkAllocateMemory(device, &(VkMemoryAllocateInfo){
+			.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+			.pNext           = &(VkMemoryDedicatedAllocateInfo){
+				.sType  = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
+				.buffer = buffers[i].buffer
+			},
+			.allocationSize  = memoryRequirements.size,
+			.memoryTypeIndex = getMemoryTypeIndex(
+				memoryRequirements.memoryTypeBits,
+				buffers[i].requiredMemoryPropertyFlagBits,
+				buffers[i].optionalMemoryPropertyFlagBits)
+		}, NULL, &buffers[i].deviceMemory)) != VK_SUCCESS)
+			exitVk("vkAllocateMemory");
 
-				if (memoryDedicatedRequirements.prefersDedicatedAllocation) {
-					VkDeviceMemory memory;
-					if ((r = vkAllocateMemory(device, &(VkMemoryAllocateInfo){
-						.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-						.pNext           = &(VkMemoryDedicatedAllocateInfo){
-							.sType  = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
-							.buffer = buffers[i]
-						},
-						.allocationSize  = memoryRequirements2.memoryRequirements.size,
-						.memoryTypeIndex = getMemoryTypeIndex(
-							memoryRequirements2.memoryRequirements.memoryTypeBits,
-							bufferInfos[i].requiredMemoryPropertyFlagBits,
-							bufferInfos[i].optionalMemoryPropertyFlagBits)
-					}, NULL, &memory)) != VK_SUCCESS)
-						exitVk("vkAllocateMemory");
+		if ((r = vkBindBufferMemory(device, buffers[i].buffer, buffers[i].deviceMemory, 0)) != VK_SUCCESS)
+			exitVk("vkBindImageMemory");
 
-					if ((r = vkBindBufferMemory(device, buffers[i], memory, 0)) != VK_SUCCESS)
-						exitVk("vkBindImageMemory");
-				}
-			} else {
-				vkGetBufferMemoryRequirements(device, buffers[i], &memoryRequirements2.memoryRequirements);
-				// TODO
-			}
+		if ((buffers[i].requiredMemoryPropertyFlagBits & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) ||
+			(buffers[i].optionalMemoryPropertyFlagBits & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
+			if ((r = vkMapMemory(device, buffers[i].deviceMemory, 0, VK_WHOLE_SIZE, 0, &buffers[i].data)) != VK_SUCCESS)
+				exitVk("vkMapMemory");
 		}
 	}
+
+	memcpy(buffers[BUFFER_STAGING].data, quadIndices, sizeof(quadIndices));
+
+	uint32_t frame = 0;
+	if ((r = vkBeginCommandBuffer(commandBuffers[frame], &(VkCommandBufferBeginInfo){
+		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+		.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
+	})) != VK_SUCCESS)
+		exitVk("vkBeginCommandBuffer");
+
+	vkCmdCopyBuffer(commandBuffers[frame], buffers[BUFFER_STAGING].buffer, buffers[BUFFER_INDICES].buffer, 1, &(VkBufferCopy){
+		.srcOffset = 0,
+		.dstOffset = 0,
+		.size = sizeof(quadIndices)
+	});
+
+	if ((r = vkEndCommandBuffer(commandBuffers[frame])) != VK_SUCCESS)
+		exitVk("vkEndCommandBuffer");
+	if ((r = vkQueueSubmit(queues[0], 1, &(VkSubmitInfo){
+		.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+		.commandBufferCount = 1,
+		.pCommandBuffers    = &commandBuffers[frame]
+	}, fences[frame])) != VK_SUCCESS)
+		exitVk("vkQueueSubmit");
 
 	for (;;) {
 		SwitchToFiber(messageFiber);
@@ -1337,14 +1408,14 @@ void WinMainCRTStartup(void) {
 				exitWSA("recvfrom");
 		}
 
-		while (({
-			LARGE_INTEGER now;
-			if (!QueryPerformanceCounter(&now))
-				exitWin32("QueryPerformanceCounter");
+		// while (({
+		// 	LARGE_INTEGER now;
+		// 	if (!QueryPerformanceCounter(&now))
+		// 		exitWin32("QueryPerformanceCounter");
 
-			uint64_t targetTicksElapsed = ((now.QuadPart - start.QuadPart) * TICKS_PER_SECOND) / performanceFrequency.QuadPart;
-			ticksElapsed < targetTicksElapsed;
-		})) {
+		// 	uint64_t targetTicksElapsed = ((now.QuadPart - start.QuadPart) * TICKS_PER_SECOND) / performanceFrequency.QuadPart;
+		// 	ticksElapsed < targetTicksElapsed;
+		// })) {
 			float forward = 0.f;
 			float strafe = 0.f;
 
@@ -1384,9 +1455,8 @@ void WinMainCRTStartup(void) {
 
 			cameraPosition = player.translation; // TODO
 			ticksElapsed++;
-		}
+		// }
 
-		static uint32_t frame = 0;
 		uint32_t imageIndex;
 		if ((r = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, imageAcquireSemaphores[frame], VK_NULL_HANDLE, &imageIndex)) != VK_SUCCESS)
 			exitVk("vkAcquireNextImageKHR");
@@ -1418,8 +1488,8 @@ void WinMainCRTStartup(void) {
 			.pClearValues    = (VkClearValue[]){ { 0 }, { 0 } }
 		}, VK_SUBPASS_CONTENTS_INLINE);
 
-		float sy = sinf(cameraYaw);
-		float cy = cosf(cameraYaw);
+		// float sy = sinf(cameraYaw);
+		// float cy = cosf(cameraYaw);
 		float sp = sinf(cameraPitch);
 		float cp = cosf(cameraPitch);
 
@@ -1451,6 +1521,10 @@ void WinMainCRTStartup(void) {
 		vkCmdBindPipeline(commandBuffers[frame], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_TRIANGLE]);
 		vkCmdDraw(commandBuffers[frame], 3, 1, 0, 0);
 
+		vkCmdBindPipeline(commandBuffers[frame], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_VOXEL]);
+		vkCmdBindIndexBuffer(commandBuffers[frame], buffers[BUFFER_INDICES].buffer, bufferOffsets[BUFFER_OFFSET_QUAD_INDICES], VK_INDEX_TYPE_UINT16);
+		vkCmdDrawIndexed(commandBuffers[frame], 36, 3, 0, 0, 0);
+
 		vkCmdBindPipeline(commandBuffers[frame], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_SKYBOX]);
 		vkCmdDraw(commandBuffers[frame], 3, 1, 0, 0);
 
@@ -1458,7 +1532,6 @@ void WinMainCRTStartup(void) {
 
 		if ((r = vkEndCommandBuffer(commandBuffers[frame])) != VK_SUCCESS)
 			exitVk("vkEndCommandBuffer");
-
 		if ((r = vkQueueSubmit(queues[0], 1, &(VkSubmitInfo){
 			.sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO,
 			.waitSemaphoreCount   = 1,
@@ -1472,7 +1545,6 @@ void WinMainCRTStartup(void) {
 			.pSignalSemaphores    = &semaphores[frame]
 		}, fences[frame])) != VK_SUCCESS)
 			exitVk("vkQueueSubmit");
-
 		if ((r = vkQueuePresentKHR(queues[0], &(VkPresentInfoKHR){
 			.sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
 			.waitSemaphoreCount = 1,
