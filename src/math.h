@@ -51,6 +51,10 @@ static inline Vec3 vec3TransformQuat(Vec3 v, Quat q) {
 	return v + (uv * (2.f * q.w)) + (vec3Cross(q.xyz, uv) * 2.f);
 }
 
+static inline Quat quatIdentity(void) {
+	return (Quat){ 0.f, 0.f, 0.f, 1.f };
+}
+
 static inline Quat quatMultiply(Quat a, Quat b) {
 	return (Quat){
 		a.x * b.w + a.w * b.x + a.y * b.z - a.z * b.y,
