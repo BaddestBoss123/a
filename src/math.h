@@ -2,6 +2,7 @@
 
 #define _USE_MATH_DEFINES
 #include <math.h>
+#include <stdint.h>
 
 typedef float Mat4 __attribute__((matrix_type(4, 4)));
 typedef float Vec2 __attribute__((ext_vector_type(2)));
@@ -30,6 +31,59 @@ static inline Mat4 mat4FromRotationTranslationScale(Quat r, Vec3 t, Vec3 s) {
 	return ret;
 }
 
+static inline Quat quatConjugate(Quat a) {
+	return (Quat){ -a.x, -a.y, -a.z, a.w };
+}
+
+static inline Quat quatIdentity(void) {
+	return (Quat){ 0.f, 0.f, 0.f, 1.f };
+}
+
+static inline Quat quatMultiply(Quat a, Quat b) {
+	return (Quat){
+		a.x * b.w + a.w * b.x + a.y * b.z - a.z * b.y,
+		a.y * b.w + a.w * b.y + a.z * b.x - a.x * b.z,
+		a.z * b.w + a.w * b.z + a.x * b.y - a.y * b.x,
+		a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z
+	};
+}
+
+static inline Quat quatRotateX(Quat a, float radians) {
+	float bx = sinf(radians);
+	float bw = cosf(radians);
+
+	return (Quat){
+		a.x * bw + a.w * bx,
+		a.y * bw + a.z * bx,
+		a.z * bw - a.y * bx,
+		a.w * bw - a.x * bx,
+	};
+}
+
+static inline Quat quatRotateY(Quat a, float radians) {
+	float by = sinf(radians);
+	float bw = cosf(radians);
+
+	return (Quat){
+		a.x * bw - a.z * by,
+		a.y * bw + a.w * by,
+		a.z * bw + a.x * by,
+		a.w * bw - a.y * by,
+	};
+}
+
+static inline Quat quatRotateZ(Quat a, float radians) {
+	float bz = sinf(radians);
+	float bw = cosf(radians);
+
+	return (Quat){
+		a.x * bw + a.y * bz,
+		a.y * bw - a.x * bz,
+		a.z * bw + a.w * bz,
+		a.w * bw - a.z * bz,
+	};
+}
+
 static inline Vec3 vec3Cross(Vec3 a, Vec3 b) {
 	return (Vec3){
 		a.y * b.z - a.z * b.y,
@@ -51,19 +105,27 @@ static inline Vec3 vec3TransformQuat(Vec3 v, Quat q) {
 	return v + (uv * (2.f * q.w)) + (vec3Cross(q.xyz, uv) * 2.f);
 }
 
-static inline Quat quatIdentity(void) {
-	return (Quat){ 0.f, 0.f, 0.f, 1.f };
+static inline double xorshift128(void) {
+	static uint64_t s[2] = { 0x9F1BA8B45C823D64, 0xBABABBF358762342 };
+
+	uint64_t x = s[0];
+	uint64_t y = s[1];
+	s[0] = y;
+
+	x ^= x << 23;
+	x ^= x >> 17;
+	x ^= y;
+	x ^= y >> 26;
+	s[1] = x;
+
+	static const uint64_t kExponentBits = 0x3FF0000000000000;
+    union {
+    	uint64_t u;
+    	double d;
+    } random = { .u = (s[0] >> 12) | kExponentBits };
+    return random.d - 1.0;
 }
 
-static inline Quat quatMultiply(Quat a, Quat b) {
-	return (Quat){
-		a.x * b.w + a.w * b.x + a.y * b.z - a.z * b.y,
-		a.y * b.w + a.w * b.y + a.z * b.x - a.x * b.z,
-		a.z * b.w + a.w * b.z + a.x * b.y - a.y * b.x,
-		a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z
-	};
-}
-
-static inline Quat quatConjugate(Quat a) {
-	return (Quat){ -a.x, -a.y, -a.z, a.w };
+static inline double random(double min, double max) {
+	return xorshift128() * (max - min) + min;
 }

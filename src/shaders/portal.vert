@@ -14,5 +14,5 @@ vec2 positions[] = vec2[](
 );
 
 void main() {
-	gl_Position = pushConstants.mvp * vec4(positions[gl_VertexIndex].x, 0.0, positions[gl_VertexIndex].y, 1.0);
+	gl_Position = pushConstants.mvp * vec4(positions[gl_VertexIndex], 0.0, 1.0);
 }

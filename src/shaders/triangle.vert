@@ -1,15 +1,12 @@
 #version 460
 
-vec2 positions[] = vec2[](
-	vec2(0.0, -0.5),
-	vec2(0.5, 0.5),
-	vec2(-0.5, 0.5)
-);
+layout(location = 0) in vec3 position;
+layout(location = 4) in mat4 mvp;
+layout(location = 8) in vec4 baseColorFactor;
 
-layout(push_constant) uniform PushConstants {
-	mat4 viewProjection;
-} pushConstants;
+layout(location = 0) flat out vec4 vBaseColorFactor;
 
 void main() {
-	gl_Position = pushConstants.viewProjection * vec4(positions[gl_VertexIndex], -1.0, 1.0);
+	gl_Position = mvp * vec4(position, 1.0);
+	vBaseColorFactor = baseColorFactor;
 }
