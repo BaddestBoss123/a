@@ -9,6 +9,7 @@
 #define TICKS_PER_SECOND 50
 #define FRAMES_IN_FLIGHT 2
 #define MAX_INSTANCES 2048
+#define MAX_PARTICLES 1024
 
 #define OEMRESOURCE
 #define VK_USE_PLATFORM_WIN32_KHR
@@ -111,6 +112,7 @@ typedef struct Portal {
 
 typedef uint8_t VoxelChunk[16][16][16];
 
+static uint16_t vertexIndices[] = { 0, 1, 2 };
 static float vertexPositions[] = {
 	0.0, -0.5, 0.0,
 	0.5, 0.5, 0.0,
@@ -119,15 +121,19 @@ static float vertexPositions[] = {
 static uint16_t quadIndices[48];
 
 typedef enum BufferRanges {
-	BUFFER_RANGE_VERTEX_POSITIONS   = ALIGN_FORWARD(sizeof(vertexPositions), 256),
+	BUFFER_RANGE_INDEX_VERTICES     = ALIGN_FORWARD(sizeof(vertexIndices), 256),
 	BUFFER_RANGE_INDEX_QUADS        = ALIGN_FORWARD(sizeof(quadIndices), 256),
+	BUFFER_RANGE_VERTEX_POSITIONS   = ALIGN_FORWARD(sizeof(vertexPositions), 256),
+	BUFFER_RANGE_PARTICLES          = ALIGN_FORWARD(MAX_PARTICLES, 256),
 	BUFFER_RANGE_INSTANCE_MVPS      = ALIGN_FORWARD(MAX_INSTANCES * sizeof(Mat4), 256),
 	BUFFER_RANGE_INSTANCE_MATERIALS = ALIGN_FORWARD(MAX_INSTANCES * sizeof(Material), 256)
 } BufferRanges;
 
 typedef enum BufferOffsets {
-	BUFFER_OFFSET_VERTEX_POSITIONS   = 0,
+	BUFFER_OFFSET_INDEX_VERTICES     = 0,
 	BUFFER_OFFSET_INDEX_QUADS        = 0,
+	BUFFER_OFFSET_VERTEX_POSITIONS   = 0,
+	BUFFER_OFFSET_PARTICLES          = 0,
 	BUFFER_OFFSET_INSTANCE_MVPS      = FRAMES_IN_FLIGHT * 0,
 	BUFFER_OFFSET_INSTANCE_MATERIALS = FRAMES_IN_FLIGHT * BUFFER_RANGE_INSTANCE_MVPS
 } BufferOffsets;
@@ -143,7 +149,7 @@ static VkPhysicalDeviceVulkan11Properties physicalDeviceVulkan11Properties = {
 	.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES,
 	.pNext = &physicalDeviceVulkan12Properties
 };
-static VkPhysicalDeviceProperties2 physicalDeviceProperties2 = {
+static VkPhysicalDeviceProperties2 physicalDeviceProperties2               = {
 	.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
 	.pNext = &physicalDeviceVulkan11Properties
 };
@@ -152,31 +158,37 @@ static struct {
 	Buffer staging;
 	Buffer index;
 	Buffer vertex;
+	Buffer particles;
 	Buffer instance;
 	Buffer uniform;
 } buffers = {
-	.staging = {
+	.staging   = {
 		.size                           = 32 * 1024 * 1024,
 		.usage                          = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
 		.requiredMemoryPropertyFlagBits = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
 	},
-	.index = {
+	.index     = {
 		.size                           = BUFFER_RANGE_INDEX_QUADS,
 		.usage                          = VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 		.requiredMemoryPropertyFlagBits = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
 	},
-	.vertex = {
+	.vertex    = {
 		.size                           = BUFFER_RANGE_VERTEX_POSITIONS,
 		.usage                          = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 		.requiredMemoryPropertyFlagBits = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
 	},
-	.instance = {
+	.particles = {
+		.size                           = FRAMES_IN_FLIGHT * BUFFER_RANGE_PARTICLES,
+		.usage                          = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+		.requiredMemoryPropertyFlagBits = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+	},
+	.instance  = {
 		.size                           = (FRAMES_IN_FLIGHT * BUFFER_RANGE_INSTANCE_MVPS) + (FRAMES_IN_FLIGHT * BUFFER_RANGE_INSTANCE_MATERIALS),
 		.usage                          = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
 		.requiredMemoryPropertyFlagBits = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 		.optionalMemoryPropertyFlagBits = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
 	},
-	.uniform = {
+	.uniform   = {
 		.size                           = FRAMES_IN_FLIGHT * 1024,
 		.usage                          = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
 		.requiredMemoryPropertyFlagBits = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
@@ -236,20 +248,21 @@ static Mat4 projectionMatrix;
 static Vec3 cameraPosition;
 static float cameraYaw;
 static float cameraPitch;
-static const float cameraFieldOfView = 0.78f;
-static const float cameraNear        = 0.1f;
+static const float cameraFieldOfView    = 0.78f;
+static const float cameraNear           = 0.1f;
+static uint32_t maxPortalRecursionDepth = 1;
 
 static Portal portals[] = {
 	{
-		.translation = { -20.f, 2.f, 0.f },
-		.rotation = { 0, 0, 0, 1 },
-		.scale = { 3, 3, 1 },
-		.link = 1
+		.translation = { -20.f, 3.f, 0.f },
+		.rotation    = { 0, 0, 0, 1 },
+		.scale       = { 3, 3, 1 },
+		.link        = 1
 	}, {
-		.translation = { 20.f, 2.f, 0.f },
-		.rotation = { 0, 0, 0, 1 },
-		.scale = { 3, 3, 1 },
-		.link = 0
+		.translation = { 20.f, 3.f, 0.f },
+		.rotation    = { 0, 0, 0, 1 },
+		.scale       = { 3, 3, 1 },
+		.link        = 0
 	}
 };
 
@@ -260,7 +273,7 @@ static Portal portals[] = {
 
 static VkCommandBuffer commandBuffer;
 static uint32_t instanceIndex;
-static uint32_t portalDrawCount;
+static uint32_t stencilReference;
 static Mat4 models[MAX_INSTANCES];
 static Mat4* mvps;
 static Material* materials;
@@ -318,7 +331,7 @@ static char* vkResultToString(void) {
 	}
 }
 
-void exitHRESULT(const char* function, HRESULT err) {
+void exitError(const char* function, HRESULT err) {
 	char buff[1024];
 	char errorMessage[1024];
 	FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, err, 0, errorMessage, sizeof(errorMessage), NULL);
@@ -327,12 +340,17 @@ void exitHRESULT(const char* function, HRESULT err) {
 	ExitProcess(0);
 }
 
+HRESULT hr;
+void exitHRESULT(const char* function) {
+	exitError(function, hr);
+}
+
 static void exitWin32(const char* function) {
-	exitHRESULT(function, GetLastError());
+	exitError(function, GetLastError());
 }
 
 static void exitWSA(const char* function) {
-	exitHRESULT(function, WSAGetLastError());
+	exitError(function, WSAGetLastError());
 }
 
 static void exitVk(const char* function) {
@@ -343,10 +361,8 @@ static void exitVk(const char* function) {
 }
 
 static uint32_t getMemoryTypeIndex(VkMemoryPropertyFlags requiredFlags, VkMemoryPropertyFlags optionalFlags) {
-	VkMemoryPropertyFlags combined = requiredFlags | optionalFlags;
-
 	for (uint32_t i = 0; i < physicalDeviceMemoryProperties.memoryTypeCount; i++) {
-		if ((memoryRequirements.memoryTypeBits & (1 << i)) && BITS_SET(physicalDeviceMemoryProperties.memoryTypes[i].propertyFlags, combined))
+		if ((memoryRequirements.memoryTypeBits & (1 << i)) && BITS_SET(physicalDeviceMemoryProperties.memoryTypes[i].propertyFlags, requiredFlags | optionalFlags))
 			return i;
 	}
 
@@ -393,10 +409,8 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 					exitVk("vkEnumerateInstanceVersion");
 			}
 
-			const char* enabledInstanceExtensions[3];
-			const char* wantedInstanceExtensions[3] = {
-				// VK_EXT_DEBUG_UTILS_EXTENSION_NAME,
-				// VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME,
+			const char* enabledInstanceExtensions[2];
+			const char* wantedInstanceExtensions[2] = {
 				VK_KHR_SURFACE_EXTENSION_NAME,
 				VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
 			};
@@ -547,6 +561,7 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 			}
 
 			enabledPhysicalDeviceFeatures2.features.textureCompressionBC = availablePhysicalDeviceFeatures2.features.textureCompressionBC;
+			enabledPhysicalDeviceFeatures2.features.depthClamp           = availablePhysicalDeviceFeatures2.features.depthClamp;
 			enabledPhysicalDeviceFeatures2.features.shaderClipDistance   = availablePhysicalDeviceFeatures2.features.shaderClipDistance;
 			enabledPhysicalDeviceFeatures2.features.samplerAnisotropy    = availablePhysicalDeviceFeatures2.features.samplerAnisotropy;
 
@@ -1000,11 +1015,13 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 				case VK_ESCAPE: {
 
 				} break;
-				case VK_LEFT:  case 0x41: input |= INPUT_START_LEFT;    break;
-				case VK_UP:    case 0x57: input |= INPUT_START_FORWARD; break;
-				case VK_RIGHT: case 0x44: input |= INPUT_START_RIGHT;   break;
-				case VK_DOWN:  case 0x53: input |= INPUT_START_BACK;    break;
-				case VK_SPACE:            input |= INPUT_START_UP;      break;
+				case 'Q': maxPortalRecursionDepth = 2; break;
+				case 'E': maxPortalRecursionDepth = 1; break;
+				case VK_LEFT:  case 'A': input |= INPUT_START_LEFT;    break;
+				case VK_UP:    case 'W': input |= INPUT_START_FORWARD; break;
+				case VK_RIGHT: case 'D': input |= INPUT_START_RIGHT;   break;
+				case VK_DOWN:  case 'S': input |= INPUT_START_BACK;    break;
+				case VK_SPACE:           input |= INPUT_START_UP;      break;
 				case VK_SHIFT: {
 					if (MapVirtualKeyW((lParam & 0x00FF0000) >> 16, MAPVK_VSC_TO_VK_EX) == VK_LSHIFT)
 						input |= INPUT_START_DOWN;
@@ -1044,11 +1061,11 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 		} break;
 		case WM_KEYUP: {
 			switch (wParam) {
-				case VK_LEFT:  case 0x41: input |= INPUT_STOP_LEFT;    break;
-				case VK_UP:    case 0x57: input |= INPUT_STOP_FORWARD; break;
-				case VK_RIGHT: case 0x44: input |= INPUT_STOP_RIGHT;   break;
-				case VK_DOWN:  case 0x53: input |= INPUT_STOP_BACK;    break;
-				case VK_SPACE:            input |= INPUT_STOP_UP;      break;
+				case VK_LEFT:  case 'A': input |= INPUT_STOP_LEFT;    break;
+				case VK_UP:    case 'W': input |= INPUT_STOP_FORWARD; break;
+				case VK_RIGHT: case 'D': input |= INPUT_STOP_RIGHT;   break;
+				case VK_DOWN:  case 'S': input |= INPUT_STOP_BACK;    break;
+				case VK_SPACE:           input |= INPUT_STOP_UP;      break;
 				case VK_SHIFT: {
 					if (MapVirtualKeyW((lParam & 0x00FF0000) >> 16, MAPVK_VSC_TO_VK_EX) == VK_LSHIFT)
 						input |= INPUT_STOP_DOWN;
@@ -1132,7 +1149,7 @@ static inline void drawScene(Vec3 cameraPosition, Vec3 xAxis, Vec3 yAxis, Vec3 z
 	viewMatrix[3][3] = 1.f;
 	Mat4 viewProjection = projectionMatrix * viewMatrix;
 
-	if (recursionDepth < 1) {
+	if (recursionDepth < maxPortalRecursionDepth) {
 		for (uint32_t i = 0; i < ARRAY_COUNT(portals); i++) {
 			// todo: portal visibility test HERE
 			Portal* portal = &portals[i];
@@ -1146,20 +1163,20 @@ static inline void drawScene(Vec3 cameraPosition, Vec3 xAxis, Vec3 yAxis, Vec3 z
 			Vec3 y = vec3TransformQuat(yAxis, q);
 			Vec3 z = vec3TransformQuat(zAxis, q);
 
-			// draw into stencil buffer but not the depth buffer
-			vkCmdSetStencilReference(commandBuffer, VK_STENCIL_FACE_FRONT_AND_BACK, ++portalDrawCount);
+			vkCmdSetStencilReference(commandBuffer, VK_STENCIL_FACE_FRONT_AND_BACK, stencilReference);
 			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_PORTAL_STENCIL]);
 			vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Mat4), &portalMVP);
 			vkCmdDraw(commandBuffer, 6, 1, 0, 0);
 
+			// todo: calculate clipping plane
 			Vec4 clippingPlane = { 0, 0, 0, 0 };
 			vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Vec4), &clippingPlane);
-			vkCmdSetStencilReference(commandBuffer, VK_STENCIL_FACE_FRONT_AND_BACK, ++portalDrawCount);
-
 			vkCmdSetStencilTestEnable(commandBuffer, VK_TRUE);
-			drawScene(portalCameraPosition, x, y, z, recursionDepth + 1);
 
-			// draw portal into depth buffer
+			vkCmdSetStencilReference(commandBuffer, VK_STENCIL_FACE_FRONT_AND_BACK, ++stencilReference);
+			drawScene(portalCameraPosition, x, y, z, recursionDepth + 1);
+			vkCmdSetStencilReference(commandBuffer, VK_STENCIL_FACE_FRONT_AND_BACK, --stencilReference);
+
 			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_PORTAL_DEPTH]);
 			vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Mat4), &portalMVP);
 			vkCmdDraw(commandBuffer, 6, 1, 0, 0);
@@ -1169,28 +1186,39 @@ static inline void drawScene(Vec3 cameraPosition, Vec3 xAxis, Vec3 yAxis, Vec3 z
 	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_VOXEL]);
 	vkCmdBindIndexBuffer(commandBuffer, buffers.index.buffer, BUFFER_OFFSET_INDEX_QUADS, VK_INDEX_TYPE_UINT16);
 
-	// loop over generated model matrices/aabbs and do culling
+	// todo: loop over generated model matrices/aabbs and do culling
 	for (uint32_t i = 0; i < 2; i++) {
 		mvps[instanceIndex] = viewProjection * models[i];
 		materials[instanceIndex] = (Material){ 127 + i * 50, 127, 127 - i * 50, 255 }; // materials[i];
-		vkCmdDrawIndexed(commandBuffer, 36, 1, 0, 0, instanceIndex);
-		instanceIndex++;
+		vkCmdDrawIndexed(commandBuffer, 36, 1, 0, 0, instanceIndex++);
 	}
 
-	// particles
-	// vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_PARTICLE]);
-	// vkCmdDraw(commandBuffer, 1, 1, 0, 0);
+	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_TRIANGLE]);
+	vkCmdBindIndexBuffer(commandBuffer, buffers.index.buffer, BUFFER_OFFSET_INDEX_VERTICES, VK_INDEX_TYPE_UINT16);
+	mvps[instanceIndex] = viewProjection;
+	materials[instanceIndex] = (Material){ 167, 127, 17, 255 };
+	vkCmdDraw(commandBuffer, 3, 1, 0, instanceIndex++);
 
-	// skybox
+	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_PARTICLE]);
+	vkCmdDraw(commandBuffer, 1, 1, 0, 0);
+
 	vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Mat4), &viewProjection);
 	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_SKYBOX]);
 	vkCmdDraw(commandBuffer, 3, 1, 0, 0);
 }
 
-extern int abc();
+static const GUID CLSID_MMDeviceEnumerator = { 0xbcde0395, 0xe52f, 0x467c, { 0x8e, 0x3d, 0xc4, 0x57, 0x92, 0x91, 0x69, 0x2e } };
+static const GUID IID_IMMDeviceEnumerator  = { 0xa95664d2, 0x9614, 0x4f35, { 0xa7, 0x46, 0xde, 0x8d, 0xb6, 0x36, 0x17, 0xe6 } };
+static const GUID IID_IAudioClient         = { 0x1cb9ad4c, 0xdbfa, 0x4c32, { 0xb1, 0x78, 0xc2, 0xf5, 0x68, 0xa7, 0x03, 0xb2 } };
+static const GUID IID_IAudioRenderClient   = { 0xf294acfc, 0x3146, 0x4483, { 0xa7, 0xbf, 0xad, 0xdc, 0xa7, 0xc2, 0x60, 0xe2 } };
+
+extern void abc(void);
 
 void WinMainCRTStartup(void) {
 	abc();
+
+	portals[0].rotation = quatRotateY(portals[0].rotation, 0.4);
+	portals[1].rotation = quatRotateY(portals[1].rotation, -0.4);
 
 	VoxelChunk chunk;
 	uint32_t faces[(16 * 16 * 16 * 4) / 2];
@@ -1233,7 +1261,7 @@ void WinMainCRTStartup(void) {
 	WSADATA wsaData;
 	int wsaError = WSAStartup(MAKEWORD(2, 2), &wsaData);
 	if (wsaError != 0)
-		exitHRESULT("WSAStartup", wsaError);
+		exitError("WSAStartup", wsaError);
 
 	SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
 	if (sock == INVALID_SOCKET)
@@ -1249,12 +1277,38 @@ void WinMainCRTStartup(void) {
 	}, sizeof(struct sockaddr_in)) == SOCKET_ERROR)
 		exitWSA("bind");
 
-	HRESULT r;
-	if (FAILED(r = CoInitializeEx(NULL, COINIT_SPEED_OVER_MEMORY)))
-		exitHRESULT("CoInitializeEx", r);
+	if (FAILED(hr = CoInitializeEx(NULL, COINIT_SPEED_OVER_MEMORY)))
+		exitHRESULT("CoInitializeEx");
 
-	// if (FAILED(r = CoCreateInstance(__uuidof(MMDeviceEnumerator), NULL, CLSCTX_ALL, IID_PPV_ARGS(&deviceEnumerator))))
-	// 	exitHRESULT("CoCreateInstance", r);
+	IMMDeviceEnumerator* enumerator;
+	IMMDevice* audioDevice;
+	IAudioClient* audioClient;
+	IAudioRenderClient* audioRenderClient;
+	WAVEFORMATEX waveFormat = {
+		.wFormatTag      = WAVE_FORMAT_EXTENSIBLE,
+		.nChannels       = 2,
+		.nSamplesPerSec  = 480000,
+		.wBitsPerSample  = sizeof(float) * 8,
+		.nBlockAlign     = (waveFormat.wBitsPerSample / 8) * waveFormat.nChannels,
+		.nAvgBytesPerSec = waveFormat.nSamplesPerSec * waveFormat.nBlockAlign,
+		.cbSize          = sizeof(WAVEFORMATEX)
+	};
+	UINT32 bufferSize;
+
+	if (FAILED(hr = CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, &IID_IMMDeviceEnumerator, (void**)&enumerator)))
+		exitHRESULT("CoCreateInstance");
+	if (FAILED(hr = enumerator->lpVtbl->GetDefaultAudioEndpoint(enumerator, eRender, eConsole, &audioDevice)))
+		exitHRESULT("IMMDeviceEnumerator::GetDefaultAudioEndpoint");
+	if (FAILED(hr = audioDevice->lpVtbl->Activate(audioDevice, &IID_IAudioClient, CLSCTX_ALL, NULL, (void**)&audioClient)))
+		exitHRESULT("IMMDevice::Activate");
+	// if (FAILED(hr = audioClient->lpVtbl->Initialize(audioClient, AUDCLNT_SHAREMODE_SHARED, 0, 10000000, 0, &waveFormat, NULL)))
+	// 	exitHRESULT("IAudioClient::Initialize");
+	// if (FAILED(hr = audioClient->lpVtbl->GetService(audioClient, &IID_IAudioRenderClient, (void**)&audioRenderClient)))
+	// 	exitHRESULT("IAudioClient::GetService");
+	// if (FAILED(hr = audioClient->lpVtbl->GetBufferSize(audioClient, &bufferSize)))
+	// 	exitHRESULT("IAudioClient::GetBufferSize");
+	// if (FAILED(hr = audioClient->lpVtbl->Start(audioClient)))
+	// 	exitHRESULT("IAudioClient::Start");
 
 	vkGetDeviceQueue(device, queueFamilyIndex, 0, &queue);
 	for (uint32_t i = 0; i < FRAMES_IN_FLIGHT; i++) {
@@ -1329,7 +1383,8 @@ void WinMainCRTStartup(void) {
 	}
 
 	memcpy(buffers.staging.data, vertexPositions, sizeof(vertexPositions));
-	memcpy(buffers.staging.data + BUFFER_RANGE_VERTEX_POSITIONS, quadIndices, sizeof(quadIndices));
+	memcpy(buffers.staging.data + BUFFER_RANGE_VERTEX_POSITIONS, vertexIndices, sizeof(vertexIndices));
+	memcpy(buffers.staging.data + BUFFER_RANGE_VERTEX_POSITIONS + BUFFER_RANGE_INDEX_VERTICES, quadIndices, sizeof(quadIndices));
 
 	if ((r = vkBeginCommandBuffer(commandBuffers[frame], &(VkCommandBufferBeginInfo){
 		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -1342,10 +1397,16 @@ void WinMainCRTStartup(void) {
 		.dstOffset = BUFFER_OFFSET_VERTEX_POSITIONS,
 		.size      = BUFFER_RANGE_VERTEX_POSITIONS
 	});
-	vkCmdCopyBuffer(commandBuffers[frame], buffers.staging.buffer, buffers.index.buffer, 1, &(VkBufferCopy){
-		.srcOffset = BUFFER_RANGE_VERTEX_POSITIONS,
-		.dstOffset = BUFFER_OFFSET_INDEX_QUADS,
-		.size      = BUFFER_RANGE_INDEX_QUADS
+	vkCmdCopyBuffer(commandBuffers[frame], buffers.staging.buffer, buffers.index.buffer, 2, (VkBufferCopy[]){
+		{
+			.srcOffset = BUFFER_RANGE_VERTEX_POSITIONS,
+			.dstOffset = BUFFER_OFFSET_INDEX_VERTICES,
+			.size      = BUFFER_RANGE_INDEX_VERTICES
+		}, {
+			.srcOffset = BUFFER_RANGE_VERTEX_POSITIONS + BUFFER_RANGE_INDEX_VERTICES,
+			.dstOffset = BUFFER_OFFSET_INDEX_QUADS,
+			.size      = BUFFER_RANGE_INDEX_QUADS
+		}
 	});
 
 	if ((r = vkEndCommandBuffer(commandBuffers[frame])) != VK_SUCCESS)
@@ -1515,6 +1576,9 @@ void WinMainCRTStartup(void) {
 			.pName  = "main"
 		}
 	};
+	VkPipelineVertexInputStateCreateInfo vertexInputStateNone = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO
+	};
 	VkPipelineVertexInputStateCreateInfo vertexInputStateTriangle = {
 		.sType                           = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
 		.vertexBindingDescriptionCount   = 3,
@@ -1524,11 +1588,11 @@ void WinMainCRTStartup(void) {
 				.stride    = sizeof(float) * 3,
 				.inputRate = VK_VERTEX_INPUT_RATE_VERTEX
 			}, {
-				.binding   = 1,
+				.binding   = 2,
 				.stride    = sizeof(Mat4),
 				.inputRate = VK_VERTEX_INPUT_RATE_INSTANCE
 			}, {
-				.binding   = 2,
+				.binding   = 3,
 				.stride    = sizeof(Material),
 				.inputRate = VK_VERTEX_INPUT_RATE_INSTANCE
 			}
@@ -1537,50 +1601,47 @@ void WinMainCRTStartup(void) {
 		.pVertexAttributeDescriptions    = (VkVertexInputAttributeDescription[]){
 			{
 				.location = 0,
-				.binding  = 1,
+				.binding  = 0,
 				.format   = VK_FORMAT_R32G32B32_SFLOAT,
 				.offset   = 0
 			}, {
 				.location = 4,
-				.binding  = 1,
+				.binding  = 2,
 				.format   = VK_FORMAT_R32G32B32A32_SFLOAT,
 				.offset   = 0
 			}, {
 				.location = 5,
-				.binding  = 1,
+				.binding  = 2,
 				.format   = VK_FORMAT_R32G32B32A32_SFLOAT,
 				.offset   = 4 * sizeof(float)
 			}, {
 				.location = 6,
-				.binding  = 1,
+				.binding  = 2,
 				.format   = VK_FORMAT_R32G32B32A32_SFLOAT,
 				.offset   = 8 * sizeof(float)
 			}, {
 				.location = 7,
-				.binding  = 1,
+				.binding  = 2,
 				.format   = VK_FORMAT_R32G32B32A32_SFLOAT,
 				.offset   = 12 * sizeof(float)
 			}, {
 				.location = 8,
-				.binding  = 2,
+				.binding  = 3,
 				.format   = VK_FORMAT_R8G8B8A8_UNORM,
 				.offset   = 0
 			}
 		}
-	};
-	VkPipelineVertexInputStateCreateInfo vertexInputStateNone = {
-		.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO
 	};
 	VkPipelineVertexInputStateCreateInfo vertexInputStateVoxel = {
 		.sType                           = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
 		.vertexBindingDescriptionCount   = 2,
 		.pVertexBindingDescriptions      = (VkVertexInputBindingDescription[]){
 			{
-				.binding   = 1,
+				.binding   = 2,
 				.stride    = sizeof(Mat4),
 				.inputRate = VK_VERTEX_INPUT_RATE_INSTANCE
 			}, {
-				.binding   = 2,
+				.binding   = 3,
 				.stride    = sizeof(Material),
 				.inputRate = VK_VERTEX_INPUT_RATE_INSTANCE
 			}
@@ -1589,28 +1650,48 @@ void WinMainCRTStartup(void) {
 		.pVertexAttributeDescriptions    = (VkVertexInputAttributeDescription[]){
 			{
 				.location = 4,
-				.binding  = 1,
+				.binding  = 2,
 				.format   = VK_FORMAT_R32G32B32A32_SFLOAT,
 				.offset   = 0
 			}, {
 				.location = 5,
-				.binding  = 1,
+				.binding  = 2,
 				.format   = VK_FORMAT_R32G32B32A32_SFLOAT,
 				.offset   = 4 * sizeof(float)
 			}, {
 				.location = 6,
-				.binding  = 1,
+				.binding  = 2,
 				.format   = VK_FORMAT_R32G32B32A32_SFLOAT,
 				.offset   = 8 * sizeof(float)
 			}, {
 				.location = 7,
-				.binding  = 1,
+				.binding  = 2,
 				.format   = VK_FORMAT_R32G32B32A32_SFLOAT,
 				.offset   = 12 * sizeof(float)
 			}, {
 				.location = 8,
-				.binding  = 2,
+				.binding  = 3,
 				.format   = VK_FORMAT_R8G8B8A8_UNORM,
+				.offset   = 0
+			}
+		}
+	};
+	VkPipelineVertexInputStateCreateInfo vertexInputStateParticle = {
+		.sType                           = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+		.vertexBindingDescriptionCount   = 1,
+		.pVertexBindingDescriptions      = (VkVertexInputBindingDescription[]){
+			{
+				.binding   = 1,
+				.stride    = sizeof(float) * 3,
+				.inputRate = VK_VERTEX_INPUT_RATE_VERTEX
+			}
+		},
+		.vertexAttributeDescriptionCount = 1,
+		.pVertexAttributeDescriptions    = (VkVertexInputAttributeDescription[]){
+			{
+				.location = 0,
+				.binding  = 1,
+				.format   = VK_FORMAT_R32G32B32_SFLOAT,
 				.offset   = 0
 			}
 		}
@@ -1633,10 +1714,9 @@ void WinMainCRTStartup(void) {
 		.lineWidth = 1.f
 	};
 	VkPipelineRasterizationStateCreateInfo rasterizationStatePortal = {
-		.sType                   = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-		// .depthBiasEnable         = VK_TRUE,
-		// .depthBiasConstantFactor = -cameraNear,
-		.lineWidth               = 1.f
+		.sType            = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+		.depthClampEnable = VK_TRUE,
+		.lineWidth        = 1.f
 	};
 	VkPipelineMultisampleStateCreateInfo multisampleState = {
 		.sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
@@ -1647,7 +1727,7 @@ void WinMainCRTStartup(void) {
 		.depthTestEnable  = VK_TRUE,
 		.depthWriteEnable = VK_TRUE,
 		.depthCompareOp   = VK_COMPARE_OP_GREATER_OR_EQUAL,
-		.front = {
+		.front            = {
 			.failOp      = VK_STENCIL_OP_KEEP,
 			.passOp      = VK_STENCIL_OP_KEEP,
 			.depthFailOp = VK_STENCIL_OP_KEEP,
@@ -1656,7 +1736,7 @@ void WinMainCRTStartup(void) {
 			.writeMask   = 0,
 			.reference   = 0
 		},
-		.back = {
+		.back             = {
 			.failOp      = VK_STENCIL_OP_KEEP,
 			.passOp      = VK_STENCIL_OP_KEEP,
 			.depthFailOp = VK_STENCIL_OP_KEEP,
@@ -1675,11 +1755,11 @@ void WinMainCRTStartup(void) {
 		.depthCompareOp  = VK_COMPARE_OP_EQUAL
 	};
 	VkPipelineDepthStencilStateCreateInfo depthStencilStatePortalStencil = {
-		.sType           = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-		.depthTestEnable = VK_TRUE,
-		.depthCompareOp  = VK_COMPARE_OP_GREATER_OR_EQUAL,
+		.sType             = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+		.depthTestEnable   = VK_TRUE,
+		.depthCompareOp    = VK_COMPARE_OP_GREATER_OR_EQUAL,
 		.stencilTestEnable = VK_TRUE,
-		.front = {
+		.front             = {
 			.failOp      = VK_STENCIL_OP_KEEP,
 			.passOp      = VK_STENCIL_OP_INCREMENT_AND_CLAMP,
 			.depthFailOp = VK_STENCIL_OP_KEEP,
@@ -1688,7 +1768,7 @@ void WinMainCRTStartup(void) {
 			.writeMask   = 0xFF,
 			.reference   = 0
 		},
-		.back = {
+		.back              = {
 			.failOp      = VK_STENCIL_OP_KEEP,
 			.passOp      = VK_STENCIL_OP_INCREMENT_AND_CLAMP,
 			.depthFailOp = VK_STENCIL_OP_KEEP,
@@ -1699,10 +1779,29 @@ void WinMainCRTStartup(void) {
 		}
 	};
 	VkPipelineDepthStencilStateCreateInfo depthStencilStatePortalDepth = {
-		.sType            = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-		.depthTestEnable  = VK_TRUE,
-		.depthWriteEnable = VK_TRUE,
-		.depthCompareOp   = VK_COMPARE_OP_GREATER_OR_EQUAL
+		.sType             = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+		.depthTestEnable   = VK_TRUE,
+		.depthWriteEnable  = VK_TRUE,
+		.depthCompareOp    = VK_COMPARE_OP_GREATER_OR_EQUAL,
+		.stencilTestEnable = VK_TRUE,
+		.front             = {
+			.failOp      = VK_STENCIL_OP_KEEP,
+			.passOp      = VK_STENCIL_OP_REPLACE,
+			.depthFailOp = VK_STENCIL_OP_KEEP,
+			.compareOp   = VK_COMPARE_OP_LESS_OR_EQUAL,
+			.compareMask = 0xFF,
+			.writeMask   = 0xFF,
+			.reference   = 0
+		},
+		.back              = {
+			.failOp      = VK_STENCIL_OP_KEEP,
+			.passOp      = VK_STENCIL_OP_REPLACE,
+			.depthFailOp = VK_STENCIL_OP_KEEP,
+			.compareOp   = VK_COMPARE_OP_LESS_OR_EQUAL,
+			.compareMask = 0xFF,
+			.writeMask   = 0xFF,
+			.reference   = 0
+		}
 	};
 	VkPipelineColorBlendStateCreateInfo colorBlendState = {
 		.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
@@ -1793,7 +1892,7 @@ void WinMainCRTStartup(void) {
 			.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
 			.stageCount          = ARRAY_COUNT(shaderStagesParticle),
 			.pStages             = shaderStagesParticle,
-			.pVertexInputState   = &vertexInputStateNone,
+			.pVertexInputState   = &vertexInputStateParticle,
 			.pInputAssemblyState = &inputAssemblyStateParticle,
 			.pViewportState      = &viewportState,
 			.pRasterizationState = &rasterizationState,
@@ -1925,16 +2024,16 @@ void WinMainCRTStartup(void) {
 			ticksElapsed++;
 		}
 
-		commandBuffer   = commandBuffers[frame];
-		instanceIndex   = 0;
-		portalDrawCount = 0;
-		mvps            = buffers.instance.data + BUFFER_OFFSET_INSTANCE_MVPS + (frame * BUFFER_RANGE_INSTANCE_MVPS);
-		materials       = buffers.instance.data + BUFFER_OFFSET_INSTANCE_MATERIALS + (frame * BUFFER_RANGE_INSTANCE_MATERIALS);
+		commandBuffer    = commandBuffers[frame];
+		instanceIndex    = 0;
+		stencilReference = 0;
+		mvps             = buffers.instance.data + BUFFER_OFFSET_INSTANCE_MVPS + (frame * BUFFER_RANGE_INSTANCE_MVPS);
+		materials        = buffers.instance.data + BUFFER_OFFSET_INSTANCE_MATERIALS + (frame * BUFFER_RANGE_INSTANCE_MATERIALS);
 
 		Vec3 xAxis     = { cy, 0, -sy };
 		Vec3 yAxis     = { sy * sp, cp, cy * sp };
 		Vec3 zAxis     = { sy * cp, -sp, cp * cy };
-		cameraPosition = player.translation; // TODO: lerp
+		cameraPosition = player.translation; // todo: inter/extrapolate between frames
 
 		models[0] = mat4FromRotationTranslationScale(quatIdentity(), (Vec3){ -20.f, 0.f, 0.f }, (Vec3){ 20.f, 1.f, 20.f });
 		models[1] = mat4FromRotationTranslationScale(quatIdentity(), (Vec3){  20.f, 0.f, 0.f }, (Vec3){ 20.f, 1.f, 20.f });
@@ -1955,12 +2054,14 @@ void WinMainCRTStartup(void) {
 			exitVk("vkBeginCommandBuffer");
 
 		vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 1, &(uint32_t){ 0 });
-		vkCmdBindVertexBuffers(commandBuffer, 0, 3, (VkBuffer[]){
+		vkCmdBindVertexBuffers(commandBuffer, 0, 4, (VkBuffer[]){
 			buffers.vertex.buffer,
+			buffers.particles.buffer,
 			buffers.instance.buffer,
 			buffers.instance.buffer
 		}, (VkDeviceSize[]){
 			BUFFER_OFFSET_VERTEX_POSITIONS,
+			BUFFER_OFFSET_PARTICLES + (frame * BUFFER_RANGE_PARTICLES),
 			BUFFER_OFFSET_INSTANCE_MVPS + (frame * BUFFER_RANGE_INSTANCE_MVPS),
 			BUFFER_OFFSET_INSTANCE_MATERIALS + (frame * BUFFER_RANGE_INSTANCE_MATERIALS)
 		});

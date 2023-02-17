@@ -64,27 +64,29 @@ struct MyRender : IDWriteTextRenderer {
 	}
 };
 
-extern "C" void exitHRESULT(const char* function, HRESULT err);
 
-extern "C" int abc() {
-	HRESULT r;
+extern "C" {
+	extern HRESULT hr;
+	extern void exitHRESULT(const char* function);
+};
 
+extern "C" void abc(void) {
 	IDWriteTextFormat* format;
 
 	const DWORD width = 256;
 	const DWORD height = 256;
 
-	if (FAILED(r = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), (IUnknown**)&factory)))
-		exitHRESULT("DWriteCreateFactory", r);
-	if (FAILED(r = factory->CreateTextFormat(L"Comic Sans MS", NULL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 24.f, L"en-us", &format)))
-		exitHRESULT("IDWriteFactory::CreateTextFormat", r);
-	if (FAILED(r = factory->CreateRenderingParams(&params)))
-		exitHRESULT("IDWriteFactory::CreateRenderingParams", r);
-	if (FAILED(r = factory->GetGdiInterop(&gdi)))
-		exitHRESULT("IDWriteFactory::GetGdiInterop", r);
+	if (FAILED(hr = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), (IUnknown**)&factory)))
+		exitHRESULT("DWriteCreateFactory");
+	if (FAILED(hr = factory->CreateTextFormat(L"Comic Sans MS", NULL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 24.f, L"en-us", &format)))
+		exitHRESULT("IDWriteFactory::CreateTextFormat");
+	if (FAILED(hr = factory->CreateRenderingParams(&params)))
+		exitHRESULT("IDWriteFactory::CreateRenderingParams");
+	if (FAILED(hr = factory->GetGdiInterop(&gdi)))
+		exitHRESULT("IDWriteFactory::GetGdiInterop");
 
-	if (FAILED(r = gdi->CreateBitmapRenderTarget(NULL, width, height, &target)))
-		exitHRESULT("IDWriteGdiInterop::CreateBitmapRenderTarget", r);
+	if (FAILED(hr = gdi->CreateBitmapRenderTarget(NULL, width, height, &target)))
+		exitHRESULT("IDWriteGdiInterop::CreateBitmapRenderTarget");
 
 	MyRender renderer;
 	color = RGB(0, 255, 0);
@@ -92,10 +94,10 @@ extern "C" int abc() {
 	const WCHAR text[] = L"Hello 😂 World!";
 
 	IDWriteTextLayout* layout;
-	if (FAILED(r = factory->CreateTextLayout(text, _countof(text) - 1, format, width, 0, &layout)))
-		exitHRESULT("IDWriteFactory::CreateTextLayout", r);
-	if (FAILED(r = layout->Draw(NULL, &renderer, 0.f, 0.f)))
-		exitHRESULT("IDWriteTextLayout::Draw", r);
+	if (FAILED(hr = factory->CreateTextLayout(text, _countof(text) - 1, format, width, 0, &layout)))
+		exitHRESULT("IDWriteFactory::CreateTextLayout");
+	if (FAILED(hr = layout->Draw(NULL, &renderer, 0.f, 0.f)))
+		exitHRESULT("IDWriteTextLayout::Draw");
 	layout->Release();
 
 	// the memory bitmap is always 32-bit top-down
@@ -128,6 +130,4 @@ extern "C" int abc() {
 	CloseHandle(f);
 
 	format->Release();
-
-	return 0;
 }

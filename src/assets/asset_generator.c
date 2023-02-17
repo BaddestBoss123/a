@@ -10,19 +10,18 @@
 #pragma comment(lib, "ucrt.lib")
 
 void mainCRTStartup(void) {
-	cgltf_options options = { 0 };
-	cgltf_data* data;
+	// cgltf_options options = { 0 };
+	// cgltf_data* data;
 
-	cgltf_parse_file(&options, "", &data);
-	cgltf_load_buffers(&options, data, "");
+	// cgltf_parse_file(&options, "", &data);
+	// cgltf_load_buffers(&options, data, "");
 
 	// loop over meshes only
 
 	FILE* f;
 	fopen_s(&f, "assets.h", "w");
 
-	fprintf(f, "\n\
-#include \"math.h\"\n\
+	fprintf(f, "#include \"../math.h\"\n\
 \n\
 typedef struct KTX2 {\n\
 	char identifier[12];\n\
@@ -79,23 +78,23 @@ typedef struct Mesh {\n\
 } Mesh;\n");
 
 
-	for (cgltf_size i = 0; i < data->meshes_count; i++) {
+// 	for (cgltf_size i = 0; i < data->meshes_count; i++) {
 
 
-		fprintf(f,
-"static const Mesh mesh_%s = {\n\
-	.primitives     = (const Primitive[]){\n", data->meshes[i].name);
+// 		fprintf(f,
+// "static const Mesh mesh_%s = {\n\
+// 	.primitives     = (const Primitive[]){\n", data->meshes[i].name);
 
-		for (cgltf_size j = 0; j < data->meshes[i].primitives_count; j++) {
+// 		for (cgltf_size j = 0; j < data->meshes[i].primitives_count; j++) {
 
-		}
+// 		}
 
-		fprintf(f,
-"	},\n\
-	.primitiveCount = %llu,\n\
-};\n\n", data->meshes[i].primitives_count);
+// 		fprintf(f,
+// "	},\n\
+// 	.primitiveCount = %llu,\n\
+// };\n\n", data->meshes[i].primitives_count);
 
-	}
+// 	}
 
 	ExitProcess(0);
 }
