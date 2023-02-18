@@ -905,12 +905,14 @@ static inline void drawScene(Vec3 cameraPosition, Vec3 xAxis, Vec3 yAxis, Vec3 z
 
 	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_TRIANGLE]);
 	vkCmdBindIndexBuffer(commandBuffer, buffers.index.buffer, BUFFER_OFFSET_INDEX_VERTICES, VK_INDEX_TYPE_UINT16);
-	mvps[instanceIndex] = viewProjection;
+	mvps[instanceIndex] = viewProjection * models[2];
 	materials[instanceIndex] = (Material){ 167, 127, 17, 255 };
 	vkCmdDraw(commandBuffer, 3, 1, 0, instanceIndex++);
 
-	// vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_PARTICLE]);
-	// vkCmdDraw(commandBuffer, 1, 1, 0, 0);
+
+	vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Mat4), &viewProjection);
+	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_PARTICLE]);
+	vkCmdDraw(commandBuffer, 1, 1, 0, 0);
 
 	vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Mat4), &viewProjection);
 	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_SKYBOX]);
@@ -1573,7 +1575,7 @@ void WinMainCRTStartup(void) {
 			.pMultisampleState   = &multisampleState,
 			.pDepthStencilState  = &depthStencilStateTriangle,
 			.pColorBlendState    = &colorBlendState,
-			.pDynamicState       = &dynamicState,
+			.pDynamicState       = &dynamicStateTriangle,
 			.layout              = pipelineLayout,
 			.renderPass          = renderPass
 		}, [GRAPHICS_PIPELINE_PORTAL_STENCIL] = {
@@ -1702,6 +1704,8 @@ void WinMainCRTStartup(void) {
 
 		models[0] = mat4FromRotationTranslationScale(quatIdentity(), (Vec3){ -20.f, 0.f, 0.f }, (Vec3){ 20.f, 1.f, 20.f });
 		models[1] = mat4FromRotationTranslationScale(quatIdentity(), (Vec3){  20.f, 0.f, 0.f }, (Vec3){ 20.f, 1.f, 20.f });
+		models[2] = mat4FromRotationTranslationScale(quatIdentity(), (Vec3){  0.f, 2.f, 0.f }, (Vec3){ 1.f, 1.f, 1.f });
+		models[3] = mat4FromRotationTranslationScale(quatIdentity(), (Vec3){  0.f, 4.f, 0.f }, (Vec3){ 1.f, 1.f, 1.f });
 
 		uint32_t imageIndex;
 		vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, imageAcquireSemaphores[frame], VK_NULL_HANDLE, &imageIndex);
