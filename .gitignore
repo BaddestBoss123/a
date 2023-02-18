@@ -1,4 +1,5 @@
 build
+rdbg.rdbg
 /src/shaders/*.h
 /src/assets/assets.h
 /src/assets/asset_generator.exe
