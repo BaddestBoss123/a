@@ -10,6 +10,7 @@
 #define FRAMES_IN_FLIGHT 2
 #define MAX_INSTANCES 2048
 #define MAX_PARTICLES 1024
+#define MAX_PORTAL_RECURSION 2
 
 #define OEMRESOURCE
 #define VK_USE_PLATFORM_WIN32_KHR
@@ -248,9 +249,8 @@ static Mat4 projectionMatrix;
 static Vec3 cameraPosition;
 static float cameraYaw;
 static float cameraPitch;
-static const float cameraFieldOfView    = 0.78f;
-static const float cameraNear           = 0.1f;
-static uint32_t maxPortalRecursionDepth = 1;
+static const float cameraFieldOfView = 0.78f;
+static const float cameraNear        = 0.1f;
 
 static Portal portals[] = {
 	{
@@ -273,7 +273,6 @@ static Portal portals[] = {
 
 static VkCommandBuffer commandBuffer;
 static uint32_t instanceIndex;
-static uint32_t stencilReference;
 static Mat4 models[MAX_INSTANCES];
 static Mat4* mvps;
 static Material* materials;
@@ -624,8 +623,6 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 			#define F(fn) fn = (PFN_##fn)vkGetDeviceProcAddr(device, #fn);
 			DEVICE_FUNCS(F)
 			#undef F
-
-			if (!vkCmdSetStencilTestEnable) vkCmdSetStencilTestEnable = vkCmdSetStencilTestEnableEXT;
 
 			if ((r = vkCreateRenderPass(device, &(VkRenderPassCreateInfo){
 				.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
@@ -1015,8 +1012,6 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 				case VK_ESCAPE: {
 
 				} break;
-				case 'Q': maxPortalRecursionDepth = 2; break;
-				case 'E': maxPortalRecursionDepth = 1; break;
 				case VK_LEFT:  case 'A': input |= INPUT_START_LEFT;    break;
 				case VK_UP:    case 'W': input |= INPUT_START_FORWARD; break;
 				case VK_RIGHT: case 'D': input |= INPUT_START_RIGHT;   break;
@@ -1129,7 +1124,7 @@ static inline uint32_t generateChunk(VoxelChunk* chunk, uint32_t* faces) {
 	return faceCount;
 }
 
-static inline void drawScene(Vec3 cameraPosition, Vec3 xAxis, Vec3 yAxis, Vec3 zAxis, uint32_t recursionDepth) {
+static inline void drawScene(Vec3 cameraPosition, Vec3 xAxis, Vec3 yAxis, Vec3 zAxis, uint32_t recursionDepth, int32_t skipPortal) {
 	Mat4 viewMatrix;
 	viewMatrix[0][0] = xAxis.x;
 	viewMatrix[1][0] = yAxis.x;
@@ -1149,8 +1144,11 @@ static inline void drawScene(Vec3 cameraPosition, Vec3 xAxis, Vec3 yAxis, Vec3 z
 	viewMatrix[3][3] = 1.f;
 	Mat4 viewProjection = projectionMatrix * viewMatrix;
 
-	if (recursionDepth < maxPortalRecursionDepth) {
+	if (recursionDepth < MAX_PORTAL_RECURSION) {
 		for (uint32_t i = 0; i < ARRAY_COUNT(portals); i++) {
+			if (i == skipPortal)
+				continue;
+
 			// todo: portal visibility test HERE
 			Portal* portal = &portals[i];
 			Portal* link = &portals[portal->link];
@@ -1163,25 +1161,23 @@ static inline void drawScene(Vec3 cameraPosition, Vec3 xAxis, Vec3 yAxis, Vec3 z
 			Vec3 y = vec3TransformQuat(yAxis, q);
 			Vec3 z = vec3TransformQuat(zAxis, q);
 
-			vkCmdSetStencilReference(commandBuffer, VK_STENCIL_FACE_FRONT_AND_BACK, stencilReference);
+			vkCmdSetStencilReference(commandBuffer, VK_STENCIL_FACE_FRONT_AND_BACK, recursionDepth);
 			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_PORTAL_STENCIL]);
 			vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Mat4), &portalMVP);
 			vkCmdDraw(commandBuffer, 6, 1, 0, 0);
 
 			// todo: calculate clipping plane
-			Vec4 clippingPlane = { 0, 0, 0, 0 };
-			vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Vec4), &clippingPlane);
-			vkCmdSetStencilTestEnable(commandBuffer, VK_TRUE);
-
-			vkCmdSetStencilReference(commandBuffer, VK_STENCIL_FACE_FRONT_AND_BACK, ++stencilReference);
-			drawScene(portalCameraPosition, x, y, z, recursionDepth + 1);
-			vkCmdSetStencilReference(commandBuffer, VK_STENCIL_FACE_FRONT_AND_BACK, --stencilReference);
+			// Vec4 clippingPlane = { 0, 0, 0, 0 };
+			// vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Vec4), &clippingPlane);
+			drawScene(portalCameraPosition, x, y, z, recursionDepth + 1, portal->link);
 
 			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_PORTAL_DEPTH]);
 			vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Mat4), &portalMVP);
 			vkCmdDraw(commandBuffer, 6, 1, 0, 0);
 		}
 	}
+
+	vkCmdSetStencilReference(commandBuffer, VK_STENCIL_FACE_FRONT_AND_BACK, recursionDepth);
 
 	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_VOXEL]);
 	vkCmdBindIndexBuffer(commandBuffer, buffers.index.buffer, BUFFER_OFFSET_INDEX_QUADS, VK_INDEX_TYPE_UINT16);
@@ -1193,14 +1189,14 @@ static inline void drawScene(Vec3 cameraPosition, Vec3 xAxis, Vec3 yAxis, Vec3 z
 		vkCmdDrawIndexed(commandBuffer, 36, 1, 0, 0, instanceIndex++);
 	}
 
-	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_TRIANGLE]);
-	vkCmdBindIndexBuffer(commandBuffer, buffers.index.buffer, BUFFER_OFFSET_INDEX_VERTICES, VK_INDEX_TYPE_UINT16);
-	mvps[instanceIndex] = viewProjection;
-	materials[instanceIndex] = (Material){ 167, 127, 17, 255 };
-	vkCmdDraw(commandBuffer, 3, 1, 0, instanceIndex++);
+	// vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_TRIANGLE]);
+	// vkCmdBindIndexBuffer(commandBuffer, buffers.index.buffer, BUFFER_OFFSET_INDEX_VERTICES, VK_INDEX_TYPE_UINT16);
+	// mvps[instanceIndex] = viewProjection;
+	// materials[instanceIndex] = (Material){ 167, 127, 17, 255 };
+	// vkCmdDraw(commandBuffer, 3, 1, 0, instanceIndex++);
 
-	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_PARTICLE]);
-	vkCmdDraw(commandBuffer, 1, 1, 0, 0);
+	// vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_PARTICLE]);
+	// vkCmdDraw(commandBuffer, 1, 1, 0, 0);
 
 	vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Mat4), &viewProjection);
 	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_SKYBOX]);
@@ -1217,8 +1213,8 @@ extern void abc(void);
 void WinMainCRTStartup(void) {
 	abc();
 
-	portals[0].rotation = quatRotateY(portals[0].rotation, 0.4);
-	portals[1].rotation = quatRotateY(portals[1].rotation, -0.4);
+	portals[0].rotation = quatRotateY(portals[0].rotation, 0.3);
+	portals[1].rotation = quatRotateY(portals[1].rotation, 0.6);
 
 	VoxelChunk chunk;
 	uint32_t faces[(16 * 16 * 16 * 4) / 2];
@@ -1283,7 +1279,7 @@ void WinMainCRTStartup(void) {
 	IMMDeviceEnumerator* enumerator;
 	IMMDevice* audioDevice;
 	IAudioClient* audioClient;
-	IAudioRenderClient* audioRenderClient;
+	// IAudioRenderClient* audioRenderClient;
 	WAVEFORMATEX waveFormat = {
 		.wFormatTag      = WAVE_FORMAT_EXTENSIBLE,
 		.nChannels       = 2,
@@ -1293,7 +1289,7 @@ void WinMainCRTStartup(void) {
 		.nAvgBytesPerSec = waveFormat.nSamplesPerSec * waveFormat.nBlockAlign,
 		.cbSize          = sizeof(WAVEFORMATEX)
 	};
-	UINT32 bufferSize;
+	// UINT32 bufferSize;
 
 	if (FAILED(hr = CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, &IID_IMMDeviceEnumerator, (void**)&enumerator)))
 		exitHRESULT("CoCreateInstance");
@@ -1722,12 +1718,13 @@ void WinMainCRTStartup(void) {
 		.sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
 		.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT
 	};
-	VkPipelineDepthStencilStateCreateInfo depthStencilState = {
-		.sType            = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-		.depthTestEnable  = VK_TRUE,
-		.depthWriteEnable = VK_TRUE,
-		.depthCompareOp   = VK_COMPARE_OP_GREATER_OR_EQUAL,
-		.front            = {
+	VkPipelineDepthStencilStateCreateInfo depthStencilStateTriangle = {
+		.sType             = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+		.depthTestEnable   = VK_TRUE,
+		.depthWriteEnable  = VK_TRUE,
+		.depthCompareOp    = VK_COMPARE_OP_GREATER_OR_EQUAL,
+		.stencilTestEnable = VK_TRUE,
+		.front             = {
 			.failOp      = VK_STENCIL_OP_KEEP,
 			.passOp      = VK_STENCIL_OP_KEEP,
 			.depthFailOp = VK_STENCIL_OP_KEEP,
@@ -1736,7 +1733,7 @@ void WinMainCRTStartup(void) {
 			.writeMask   = 0,
 			.reference   = 0
 		},
-		.back             = {
+		.back              = {
 			.failOp      = VK_STENCIL_OP_KEEP,
 			.passOp      = VK_STENCIL_OP_KEEP,
 			.depthFailOp = VK_STENCIL_OP_KEEP,
@@ -1750,9 +1747,28 @@ void WinMainCRTStartup(void) {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
 	};
 	VkPipelineDepthStencilStateCreateInfo depthStencilStateSkybox = {
-		.sType           = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-		.depthTestEnable = VK_TRUE,
-		.depthCompareOp  = VK_COMPARE_OP_EQUAL
+		.sType             = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+		.depthTestEnable   = VK_TRUE,
+		.depthCompareOp    = VK_COMPARE_OP_EQUAL,
+		.stencilTestEnable = VK_TRUE,
+		.front             = {
+			.failOp      = VK_STENCIL_OP_KEEP,
+			.passOp      = VK_STENCIL_OP_KEEP,
+			.depthFailOp = VK_STENCIL_OP_KEEP,
+			.compareOp   = VK_COMPARE_OP_EQUAL,
+			.compareMask = 0xFF,
+			.writeMask   = 0,
+			.reference   = 0
+		},
+		.back              = {
+			.failOp      = VK_STENCIL_OP_KEEP,
+			.passOp      = VK_STENCIL_OP_KEEP,
+			.depthFailOp = VK_STENCIL_OP_KEEP,
+			.compareOp   = VK_COMPARE_OP_EQUAL,
+			.compareMask = 0xFF,
+			.writeMask   = 0,
+			.reference   = 0
+		}
 	};
 	VkPipelineDepthStencilStateCreateInfo depthStencilStatePortalStencil = {
 		.sType             = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
@@ -1786,18 +1802,18 @@ void WinMainCRTStartup(void) {
 		.stencilTestEnable = VK_TRUE,
 		.front             = {
 			.failOp      = VK_STENCIL_OP_KEEP,
-			.passOp      = VK_STENCIL_OP_REPLACE,
+			.passOp      = VK_STENCIL_OP_DECREMENT_AND_CLAMP,
 			.depthFailOp = VK_STENCIL_OP_KEEP,
-			.compareOp   = VK_COMPARE_OP_LESS_OR_EQUAL,
+			.compareOp   = VK_COMPARE_OP_EQUAL,
 			.compareMask = 0xFF,
 			.writeMask   = 0xFF,
 			.reference   = 0
 		},
 		.back              = {
 			.failOp      = VK_STENCIL_OP_KEEP,
-			.passOp      = VK_STENCIL_OP_REPLACE,
+			.passOp      = VK_STENCIL_OP_DECREMENT_AND_CLAMP,
 			.depthFailOp = VK_STENCIL_OP_KEEP,
-			.compareOp   = VK_COMPARE_OP_LESS_OR_EQUAL,
+			.compareOp   = VK_COMPARE_OP_EQUAL,
 			.compareMask = 0xFF,
 			.writeMask   = 0xFF,
 			.reference   = 0
@@ -1827,12 +1843,11 @@ void WinMainCRTStartup(void) {
 	};
 	VkPipelineDynamicStateCreateInfo dynamicStateTriangle = {
 		.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-		.dynamicStateCount = 4,
+		.dynamicStateCount = 3,
 		.pDynamicStates    = (VkDynamicState[]){
 			VK_DYNAMIC_STATE_VIEWPORT,
 			VK_DYNAMIC_STATE_SCISSOR,
-			VK_DYNAMIC_STATE_STENCIL_REFERENCE,
-			VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE
+			VK_DYNAMIC_STATE_STENCIL_REFERENCE
 		}
 	};
 	VkPipelineDynamicStateCreateInfo dynamicStatePortal = {
@@ -1869,7 +1884,7 @@ void WinMainCRTStartup(void) {
 			.pViewportState      = &viewportState,
 			.pRasterizationState = &rasterizationState,
 			.pMultisampleState   = &multisampleState,
-			.pDepthStencilState  = &depthStencilState,
+			.pDepthStencilState  = &depthStencilStateTriangle,
 			.pColorBlendState    = &colorBlendState,
 			.pDynamicState       = &dynamicStateTriangle,
 			.layout              = pipelineLayout,
@@ -1885,7 +1900,7 @@ void WinMainCRTStartup(void) {
 			.pMultisampleState   = &multisampleState,
 			.pDepthStencilState  = &depthStencilStateSkybox,
 			.pColorBlendState    = &colorBlendState,
-			.pDynamicState       = &dynamicState,
+			.pDynamicState       = &dynamicStateTriangle,
 			.layout              = pipelineLayout,
 			.renderPass          = renderPass
 		}, [GRAPHICS_PIPELINE_PARTICLE] = {
@@ -1897,7 +1912,7 @@ void WinMainCRTStartup(void) {
 			.pViewportState      = &viewportState,
 			.pRasterizationState = &rasterizationState,
 			.pMultisampleState   = &multisampleState,
-			.pDepthStencilState  = &depthStencilState,
+			.pDepthStencilState  = &depthStencilStateTriangle,
 			.pColorBlendState    = &colorBlendState,
 			.pDynamicState       = &dynamicState,
 			.layout              = pipelineLayout,
@@ -1927,7 +1942,7 @@ void WinMainCRTStartup(void) {
 			.pMultisampleState   = &multisampleState,
 			.pDepthStencilState  = &depthStencilStatePortalDepth,
 			.pColorBlendState    = &colorBlendStatePortal,
-			.pDynamicState       = &dynamicState,
+			.pDynamicState       = &dynamicStatePortal,
 			.layout              = pipelineLayout,
 			.renderPass          = renderPass
 		}, [GRAPHICS_PIPELINE_VOXEL] = {
@@ -1939,7 +1954,7 @@ void WinMainCRTStartup(void) {
 			.pViewportState      = &viewportState,
 			.pRasterizationState = &rasterizationState,
 			.pMultisampleState   = &multisampleState,
-			.pDepthStencilState  = &depthStencilState,
+			.pDepthStencilState  = &depthStencilStateTriangle,
 			.pColorBlendState    = &colorBlendState,
 			.pDynamicState       = &dynamicStateTriangle,
 			.layout              = pipelineLayout,
@@ -2026,7 +2041,6 @@ void WinMainCRTStartup(void) {
 
 		commandBuffer    = commandBuffers[frame];
 		instanceIndex    = 0;
-		stencilReference = 0;
 		mvps             = buffers.instance.data + BUFFER_OFFSET_INSTANCE_MVPS + (frame * BUFFER_RANGE_INSTANCE_MVPS);
 		materials        = buffers.instance.data + BUFFER_OFFSET_INSTANCE_MATERIALS + (frame * BUFFER_RANGE_INSTANCE_MATERIALS);
 
@@ -2078,7 +2092,7 @@ void WinMainCRTStartup(void) {
 			.pClearValues    = (VkClearValue[]){ { 0 }, { 0 } }
 		}, VK_SUBPASS_CONTENTS_INLINE);
 
-		drawScene(cameraPosition, xAxis, yAxis, zAxis, 0);
+		drawScene(cameraPosition, xAxis, yAxis, zAxis, 0, -1);
 
 		vkCmdEndRenderPass(commandBuffer);
 
