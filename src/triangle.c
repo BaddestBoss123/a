@@ -42,7 +42,6 @@
 #include "shaders/voxel.vert.h"
 #include "assets/assets.h"
 
-static PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr;
 #define F(fn) static PFN_##fn fn;
 	BEFORE_INSTANCE_FUNCS(F)
 	INSTANCE_FUNCS(F)
@@ -139,22 +138,6 @@ typedef enum BufferOffsets {
 	BUFFER_OFFSET_INSTANCE_MATERIALS = FRAMES_IN_FLIGHT * BUFFER_RANGE_INSTANCE_MVPS
 } BufferOffsets;
 
-static VkPhysicalDeviceVulkan13Properties physicalDeviceVulkan13Properties = {
-	.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES
-};
-static VkPhysicalDeviceVulkan12Properties physicalDeviceVulkan12Properties = {
-	.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_PROPERTIES,
-	.pNext = &physicalDeviceVulkan13Properties
-};
-static VkPhysicalDeviceVulkan11Properties physicalDeviceVulkan11Properties = {
-	.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_PROPERTIES,
-	.pNext = &physicalDeviceVulkan12Properties
-};
-static VkPhysicalDeviceProperties2 physicalDeviceProperties2               = {
-	.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
-	.pNext = &physicalDeviceVulkan11Properties
-};
-
 static struct {
 	Buffer staging;
 	Buffer index;
@@ -197,9 +180,10 @@ static struct {
 	}
 };
 
-static VkResult r;
 static VkDevice device;
 static VkPhysicalDevice physicalDevice;
+static VkPhysicalDeviceFeatures physicalDeviceFeatures;
+static VkPhysicalDeviceProperties physicalDeviceProperties;
 static VkPhysicalDeviceMemoryProperties physicalDeviceMemoryProperties;
 static VkMemoryRequirements memoryRequirements;
 static uint32_t queueFamilyIndex;
@@ -277,88 +261,6 @@ static Mat4 models[MAX_INSTANCES];
 static Mat4* mvps;
 static Material* materials;
 
-static char* vkResultToString(void) {
-	switch (r) {
-	#define CASE(r) case r: return #r
-		CASE(VK_SUCCESS);
-		CASE(VK_NOT_READY);
-		CASE(VK_TIMEOUT);
-		CASE(VK_EVENT_SET);
-		CASE(VK_EVENT_RESET);
-		CASE(VK_INCOMPLETE);
-		CASE(VK_ERROR_OUT_OF_HOST_MEMORY);
-		CASE(VK_ERROR_OUT_OF_DEVICE_MEMORY);
-		CASE(VK_ERROR_INITIALIZATION_FAILED);
-		CASE(VK_ERROR_DEVICE_LOST);
-		CASE(VK_ERROR_MEMORY_MAP_FAILED);
-		CASE(VK_ERROR_LAYER_NOT_PRESENT);
-		CASE(VK_ERROR_EXTENSION_NOT_PRESENT);
-		CASE(VK_ERROR_FEATURE_NOT_PRESENT);
-		CASE(VK_ERROR_INCOMPATIBLE_DRIVER);
-		CASE(VK_ERROR_TOO_MANY_OBJECTS);
-		CASE(VK_ERROR_FORMAT_NOT_SUPPORTED);
-		CASE(VK_ERROR_FRAGMENTED_POOL);
-		CASE(VK_ERROR_UNKNOWN);
-		CASE(VK_ERROR_OUT_OF_POOL_MEMORY);
-		CASE(VK_ERROR_INVALID_EXTERNAL_HANDLE);
-		CASE(VK_ERROR_FRAGMENTATION);
-		CASE(VK_ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS);
-		CASE(VK_PIPELINE_COMPILE_REQUIRED);
-		CASE(VK_ERROR_SURFACE_LOST_KHR);
-		CASE(VK_ERROR_NATIVE_WINDOW_IN_USE_KHR);
-		CASE(VK_SUBOPTIMAL_KHR);
-		CASE(VK_ERROR_OUT_OF_DATE_KHR);
-		CASE(VK_ERROR_INCOMPATIBLE_DISPLAY_KHR);
-		CASE(VK_ERROR_VALIDATION_FAILED_EXT);
-		CASE(VK_ERROR_INVALID_SHADER_NV);
-		CASE(VK_ERROR_IMAGE_USAGE_NOT_SUPPORTED_KHR);
-		CASE(VK_ERROR_VIDEO_PICTURE_LAYOUT_NOT_SUPPORTED_KHR);
-		CASE(VK_ERROR_VIDEO_PROFILE_OPERATION_NOT_SUPPORTED_KHR);
-		CASE(VK_ERROR_VIDEO_PROFILE_FORMAT_NOT_SUPPORTED_KHR);
-		CASE(VK_ERROR_VIDEO_PROFILE_CODEC_NOT_SUPPORTED_KHR);
-		CASE(VK_ERROR_VIDEO_STD_VERSION_NOT_SUPPORTED_KHR);
-		CASE(VK_ERROR_INVALID_DRM_FORMAT_MODIFIER_PLANE_LAYOUT_EXT);
-		CASE(VK_ERROR_NOT_PERMITTED_KHR);
-		CASE(VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT);
-		CASE(VK_THREAD_IDLE_KHR);
-		CASE(VK_THREAD_DONE_KHR);
-		CASE(VK_OPERATION_DEFERRED_KHR);
-		CASE(VK_OPERATION_NOT_DEFERRED_KHR);
-		CASE(VK_ERROR_COMPRESSION_EXHAUSTED_EXT);
-	#undef CASE
-		default: return "VK_ERROR_UNKNOWN";
-	}
-}
-
-void exitError(const char* function, HRESULT err) {
-	char buff[1024];
-	char errorMessage[1024];
-	FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, err, 0, errorMessage, sizeof(errorMessage), NULL);
-	sprintf(buff, "%s failed: %s", function, errorMessage);
-	MessageBoxA(NULL, buff, NULL, MB_OK);
-	ExitProcess(0);
-}
-
-HRESULT hr;
-void exitHRESULT(const char* function) {
-	exitError(function, hr);
-}
-
-static void exitWin32(const char* function) {
-	exitError(function, GetLastError());
-}
-
-static void exitWSA(const char* function) {
-	exitError(function, WSAGetLastError());
-}
-
-static void exitVk(const char* function) {
-	char buff[512];
-	sprintf(buff, "%s failed: %s", function, vkResultToString());
-	MessageBoxA(NULL, buff, NULL, MB_OK);
-	ExitProcess(0);
-}
-
 static uint32_t getMemoryTypeIndex(VkMemoryPropertyFlags requiredFlags, VkMemoryPropertyFlags optionalFlags) {
 	for (uint32_t i = 0; i < physicalDeviceMemoryProperties.memoryTypeCount; i++) {
 		if ((memoryRequirements.memoryTypeBits & (1 << i)) && BITS_SET(physicalDeviceMemoryProperties.memoryTypes[i].propertyFlags, requiredFlags | optionalFlags))
@@ -376,19 +278,14 @@ static uint32_t getMemoryTypeIndex(VkMemoryPropertyFlags requiredFlags, VkMemory
 static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 	switch (msg) {
 		case WM_CREATE: {
-			if (!RegisterRawInputDevices(&(RAWINPUTDEVICE){
+			RegisterRawInputDevices(&(RAWINPUTDEVICE){
 				.usUsagePage = HID_USAGE_PAGE_GENERIC,
 				.usUsage     = HID_USAGE_GENERIC_MOUSE,
 				.dwFlags     = 0,
 				.hwndTarget  = hWnd
-			}, 1, sizeof(RAWINPUTDEVICE)))
-				exitWin32("RegisterRawInputDevices");
+			}, 1, sizeof(RAWINPUTDEVICE));
 
-			HMODULE vulkanModule = LoadLibraryW(L"vulkan-1.dll");
-			if (!vulkanModule)
-				exitWin32("LoadLibraryW");
-
-			vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)GetProcAddress(vulkanModule, "vkGetInstanceProcAddr");
+			PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)GetProcAddress(LoadLibraryW(L"vulkan-1.dll"), "vkGetInstanceProcAddr");
 
 			#define F(fn) fn = (PFN_##fn)vkGetInstanceProcAddr(NULL, #fn);
 			BEFORE_INSTANCE_FUNCS(F)
@@ -403,71 +300,36 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 				.apiVersion         = VK_API_VERSION_1_0
 			};
 
-			if (vkEnumerateInstanceVersion) {
-				if ((r = vkEnumerateInstanceVersion(&applicationInfo.apiVersion)) != VK_SUCCESS)
-					exitVk("vkEnumerateInstanceVersion");
-			}
-
-			const char* enabledInstanceExtensions[2];
-			const char* wantedInstanceExtensions[2] = {
-				VK_KHR_SURFACE_EXTENSION_NAME,
-				VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
-			};
-			uint32_t wantedInstanceExtensionsCount = 2;
-
-			if (applicationInfo.apiVersion < VK_API_VERSION_1_1)
-				wantedInstanceExtensions[wantedInstanceExtensionsCount++] = VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME;
-
-			VkInstanceCreateInfo instanceCreateInfo = {
+			VkInstance instance;
+			vkCreateInstance(&(VkInstanceCreateInfo){
 				.sType                   = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
 				.pApplicationInfo        = &applicationInfo,
-				.enabledExtensionCount   = 0,
-				.ppEnabledExtensionNames = enabledInstanceExtensions
-			};
-
-			VkExtensionProperties instanceExtensionProperties[32];
-			uint32_t instanceExtensionPropertiesCount = ARRAY_COUNT(instanceExtensionProperties);
-			r = vkEnumerateInstanceExtensionProperties(NULL, &instanceExtensionPropertiesCount, instanceExtensionProperties);
-			if (r != VK_SUCCESS && r != VK_INCOMPLETE)
-				exitVk("vkEnumerateInstanceExtensionProperties");
-
-			for (uint32_t i = 0; i < wantedInstanceExtensionsCount; i++) {
-				for (uint32_t j = 0; j < instanceExtensionPropertiesCount; j++) {
-					if (strcmp(wantedInstanceExtensions[i], instanceExtensionProperties[j].extensionName) == 0) {
-						enabledInstanceExtensions[instanceCreateInfo.enabledExtensionCount++] = wantedInstanceExtensions[i];
-						break;
-					}
+				.enabledExtensionCount   = 2,
+				.ppEnabledExtensionNames = (const char*[]){
+					VK_KHR_SURFACE_EXTENSION_NAME,
+					VK_KHR_WIN32_SURFACE_EXTENSION_NAME
 				}
-			}
-
-			VkInstance instance;
-			if ((r = vkCreateInstance(&instanceCreateInfo, NULL, &instance) != VK_SUCCESS))
-				exitVk("vkCreateInstance");
+			}, NULL, &instance);
 
 			#define F(fn) fn = (PFN_##fn)vkGetInstanceProcAddr(instance, #fn);
 			INSTANCE_FUNCS(F)
 			#undef F
 
-			if (!vkGetPhysicalDeviceProperties2) vkGetPhysicalDeviceProperties2 = vkGetPhysicalDeviceProperties2KHR;
-
-			if ((r = vkCreateWin32SurfaceKHR(instance, &(VkWin32SurfaceCreateInfoKHR){
+			vkCreateWin32SurfaceKHR(instance, &(VkWin32SurfaceCreateInfoKHR){
 				.sType     = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
 				.hinstance = hInstance,
 				.hwnd      = hWnd
-			}, NULL, &surface)) != VK_SUCCESS)
-				exitVk("vkCreateWin32SurfaceKHR");
+			}, NULL, &surface);
 
-			r = vkEnumeratePhysicalDevices(instance, &(uint32_t){ 1 }, &physicalDevice);
-			if (r != VK_SUCCESS && r != VK_INCOMPLETE)
-				exitVk("vkEnumeratePhysicalDevices");
-
+			vkEnumeratePhysicalDevices(instance, &(uint32_t){ 1 }, &physicalDevice);
+			VkPhysicalDeviceFeatures availablePhysicalDeviceFeatures;
 			vkGetPhysicalDeviceMemoryProperties(physicalDevice, &physicalDeviceMemoryProperties);
+			vkGetPhysicalDeviceProperties(physicalDevice, &physicalDeviceProperties);
+			vkGetPhysicalDeviceFeatures(physicalDevice, &availablePhysicalDeviceFeatures);
 
 			VkSurfaceFormatKHR surfaceFormats[16];
 			uint32_t surfaceFormatCount = ARRAY_COUNT(surfaceFormats);
-			r = vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &surfaceFormatCount, surfaceFormats);
-			if (r != VK_SUCCESS && r != VK_INCOMPLETE)
-				exitVk("vkGetPhysicalDeviceSurfaceFormatsKHR");
+			vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &surfaceFormatCount, surfaceFormats);
 
 			surfaceFormat = surfaceFormats[0];
 			for (uint32_t i = 0; i < surfaceFormatCount; i++) {
@@ -484,8 +346,7 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 			for (uint32_t i = 0; i < queueFamilyPropertyCount; i++) {
 				if (BITS_SET(queueFamilyProperties[i].queueFlags, (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT))) {
 					VkBool32 presentSupport;
-					if ((r = vkGetPhysicalDeviceSurfaceSupportKHR(physicalDevice, i, surface, &presentSupport)) != VK_SUCCESS)
-						exitVk("vkGetPhysicalDeviceSurfaceSupportKHR");
+					vkGetPhysicalDeviceSurfaceSupportKHR(physicalDevice, i, surface, &presentSupport);
 
 					if (presentSupport) {
 						queueFamilyIndex = i;
@@ -494,137 +355,32 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 				}
 			}
 
-			VkExtensionProperties deviceExtensionProperties[256];
-			uint32_t deviceExtensionPropertiesCount = ARRAY_COUNT(deviceExtensionProperties);
-			r = vkEnumerateDeviceExtensionProperties(physicalDevice, NULL, &deviceExtensionPropertiesCount, deviceExtensionProperties);
-			if (r != VK_SUCCESS && r != VK_INCOMPLETE)
-				exitVk("vkEnumerateDeviceExtensionProperties");
-
-			VkPhysicalDeviceExtendedDynamicStateFeaturesEXT enabledPhysicalDeviceExtendedDynamicStateFeatures = {
-				.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT
-			};
-			VkPhysicalDeviceVulkan13Features enabledPhysicalDevice13Features = {
-				.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES
-			};
-			VkPhysicalDeviceVulkan12Features enabledPhysicalDevice12Features = {
-				.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES
-			};
-			VkPhysicalDeviceVulkan11Features enabledPhysicalDevice11Features = {
-				.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES
-			};
-			VkPhysicalDeviceFeatures2 enabledPhysicalDeviceFeatures2 = {
-				.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2
-			};
-
-			VkPhysicalDeviceExtendedDynamicStateFeaturesEXT availablePhysicalDeviceExtendedDynamicStateFeatures = {
-				.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_FEATURES_EXT
-			};
-			VkPhysicalDeviceVulkan13Features availablePhysicalDevice13Features = {
-				.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
-				.pNext = &availablePhysicalDeviceExtendedDynamicStateFeatures
-			};
-			VkPhysicalDeviceVulkan12Features availablePhysicalDevice12Features = {
-				.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
-				.pNext = &availablePhysicalDevice13Features
-			};
-			VkPhysicalDeviceVulkan11Features availablePhysicalDevice11Features = {
-				.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
-				.pNext = &availablePhysicalDevice12Features
-			};
-			VkPhysicalDeviceFeatures2 availablePhysicalDeviceFeatures2 = {
-				.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-				.pNext = &availablePhysicalDevice11Features,
-			};
-
-			const char* enabledDeviceExtensions[16];
-			const char* wantedDeviceExtensions[16] = {
-				VK_KHR_SWAPCHAIN_EXTENSION_NAME
-			};
-			uint32_t wantedDeviceExtensionsCount = 1;
-
 			VkDeviceCreateInfo deviceCreateInfo = {
 				.sType                   = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
 				.queueCreateInfoCount    = 1,
-				.enabledExtensionCount   = 0,
-				.ppEnabledExtensionNames = enabledDeviceExtensions
+				.pQueueCreateInfos       = &(VkDeviceQueueCreateInfo){
+					.sType            = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+					.queueFamilyIndex = queueFamilyIndex,
+					.queueCount       = 1,
+					.pQueuePriorities = &(float){ 1.f }
+				},
+				.enabledExtensionCount   = 1,
+				.ppEnabledExtensionNames = (const char*[]){ VK_KHR_SWAPCHAIN_EXTENSION_NAME },
+				.pEnabledFeatures        = &physicalDeviceFeatures
 			};
 
-			if (vkGetPhysicalDeviceProperties2) {
-				vkGetPhysicalDeviceProperties2(physicalDevice, &physicalDeviceProperties2);
-				vkGetPhysicalDeviceFeatures2(physicalDevice, &availablePhysicalDeviceFeatures2);
-				deviceCreateInfo.pNext = &enabledPhysicalDeviceFeatures2;
-			} else {
-				vkGetPhysicalDeviceProperties(physicalDevice, &physicalDeviceProperties2.properties);
-				vkGetPhysicalDeviceFeatures(physicalDevice, &availablePhysicalDeviceFeatures2.features);
-				deviceCreateInfo.pEnabledFeatures = &enabledPhysicalDeviceFeatures2.features;
-			}
+			physicalDeviceFeatures.textureCompressionBC = availablePhysicalDeviceFeatures.textureCompressionBC;
+			physicalDeviceFeatures.depthClamp           = availablePhysicalDeviceFeatures.depthClamp;
+			physicalDeviceFeatures.shaderClipDistance   = availablePhysicalDeviceFeatures.shaderClipDistance;
+			physicalDeviceFeatures.samplerAnisotropy    = availablePhysicalDeviceFeatures.samplerAnisotropy;
 
-			enabledPhysicalDeviceFeatures2.features.textureCompressionBC = availablePhysicalDeviceFeatures2.features.textureCompressionBC;
-			enabledPhysicalDeviceFeatures2.features.depthClamp           = availablePhysicalDeviceFeatures2.features.depthClamp;
-			enabledPhysicalDeviceFeatures2.features.shaderClipDistance   = availablePhysicalDeviceFeatures2.features.shaderClipDistance;
-			enabledPhysicalDeviceFeatures2.features.samplerAnisotropy    = availablePhysicalDeviceFeatures2.features.samplerAnisotropy;
-
-			if (physicalDeviceProperties2.properties.apiVersion >= VK_API_VERSION_1_1) {
-				enabledPhysicalDeviceFeatures2.pNext                 = &enabledPhysicalDevice11Features;
-				// enabledPhysicalDevice11Features.shaderDrawParameters = availablePhysicalDevice11Features.shaderDrawParameters;
-			} else {
-				wantedDeviceExtensions[wantedDeviceExtensionsCount++] = VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME;
-			}
-
-			if (physicalDeviceProperties2.properties.apiVersion >= VK_API_VERSION_1_2) {
-				enabledPhysicalDevice11Features.pNext             = &enabledPhysicalDevice12Features;
-				// enabledPhysicalDevice12Features.drawIndirectCount = availablePhysicalDevice12Features.drawIndirectCount;
-			} else {
-
-			}
-
-			if (physicalDeviceProperties2.properties.apiVersion >= VK_API_VERSION_1_3) {
-				enabledPhysicalDevice12Features.pNext = &enabledPhysicalDevice13Features;
-			} else {
-				if (availablePhysicalDeviceExtendedDynamicStateFeatures.extendedDynamicState) {
-					for (uint32_t i = 0; i < deviceExtensionPropertiesCount; i++) {
-						if (strcmp(VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME, deviceExtensionProperties[i].extensionName) == 0) {
-							enabledDeviceExtensions[deviceCreateInfo.enabledExtensionCount++] = VK_EXT_EXTENDED_DYNAMIC_STATE_EXTENSION_NAME;
-							break;
-						}
-					}
-
-					enabledPhysicalDeviceExtendedDynamicStateFeatures.extendedDynamicState = VK_TRUE;
-					enabledPhysicalDeviceExtendedDynamicStateFeatures.pNext                = (void*)deviceCreateInfo.pNext;
-					deviceCreateInfo.pNext                                                 = &enabledPhysicalDeviceExtendedDynamicStateFeatures;
-				}
-			}
-
-			// if (!enabledPhysicalDevice11Features.shaderDrawParameters)
-			// 	wantedDeviceExtensions[wantedDeviceExtensionsCount++] = VK_KHR_SHADER_DRAW_PARAMETERS_EXTENSION_NAME;
-
-			// if (!enabledPhysicalDevice12Features.drawIndirectCount)
-			// 	wantedDeviceExtensions[wantedDeviceExtensionsCount++] = VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME;
-
-			for (uint32_t i = 0; i < wantedDeviceExtensionsCount; i++) {
-				for (uint32_t j = 0; j < deviceExtensionPropertiesCount; j++) {
-					if (strcmp(wantedDeviceExtensions[i], deviceExtensionProperties[j].extensionName) == 0) {
-						enabledDeviceExtensions[deviceCreateInfo.enabledExtensionCount++] = wantedDeviceExtensions[i];
-						break;
-					}
-				}
-			}
-
-			deviceCreateInfo.pQueueCreateInfos = &(VkDeviceQueueCreateInfo){
-				.sType            = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-				.queueFamilyIndex = queueFamilyIndex,
-				.queueCount       = 1,
-				.pQueuePriorities = (float[]){ 1.f }
-			};
-
-			if ((r = vkCreateDevice(physicalDevice, &deviceCreateInfo, NULL, &device)) != VK_SUCCESS)
-				exitVk("vkCreateDevice");
+			vkCreateDevice(physicalDevice, &deviceCreateInfo, NULL, &device);
 
 			#define F(fn) fn = (PFN_##fn)vkGetDeviceProcAddr(device, #fn);
 			DEVICE_FUNCS(F)
 			#undef F
 
-			if ((r = vkCreateRenderPass(device, &(VkRenderPassCreateInfo){
+			vkCreateRenderPass(device, &(VkRenderPassCreateInfo){
 				.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
 				.attachmentCount = 2,
 				.pAttachments    = (VkAttachmentDescription[]){
@@ -671,10 +427,9 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 					.dstAccessMask   = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
 					.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT
 				}
-			}, NULL, &renderPass)) != VK_SUCCESS)
-				exitVk("vkCreateRenderPass");
+			}, NULL, &renderPass);
 
-			if ((r = vkCreateRenderPass(device, &(VkRenderPassCreateInfo){
+			vkCreateRenderPass(device, &(VkRenderPassCreateInfo){
 				.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
 				.attachmentCount = 1,
 				.pAttachments    = &(VkAttachmentDescription){
@@ -706,16 +461,14 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 					.dstAccessMask   = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
 					.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT
 				}
-			}, NULL, &renderPassBlit)) != VK_SUCCESS)
-				exitVk("vkCreateRenderPass");
+			}, NULL, &renderPassBlit);
 
 			VkSampler samplers[1];
-			if ((r = vkCreateSampler(device, &(VkSamplerCreateInfo){
+			vkCreateSampler(device, &(VkSamplerCreateInfo){
 				.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO
-			}, NULL, &samplers[0])) != VK_SUCCESS)
-				exitVk("vkCreateSampler");
+			}, NULL, &samplers[0]);
 
-			if ((r = vkCreateDescriptorSetLayout(device, &(VkDescriptorSetLayoutCreateInfo){
+			vkCreateDescriptorSetLayout(device, &(VkDescriptorSetLayoutCreateInfo){
 				.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
 				.bindingCount = 2,
 				.pBindings    = (VkDescriptorSetLayoutBinding[]){
@@ -737,10 +490,9 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 						.stageFlags      = VK_SHADER_STAGE_VERTEX_BIT
 					}
 				}
-			}, NULL, &descriptorSetLayout)) != VK_SUCCESS)
-				exitVk("vkCreateDescriptorSetLayout");
+			}, NULL, &descriptorSetLayout);
 
-			if ((r = vkCreateDescriptorPool(device, &(VkDescriptorPoolCreateInfo){
+			vkCreateDescriptorPool(device, &(VkDescriptorPoolCreateInfo){
 				.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
 				.maxSets       = 1,
 				.poolSizeCount = 2,
@@ -753,16 +505,14 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 						.descriptorCount = 1
 					}
 				}
-			}, NULL, &descriptorPool)) != VK_SUCCESS)
-				exitVk("vkCreateDescriptorPool");
+			}, NULL, &descriptorPool);
 
-			if ((r = vkAllocateDescriptorSets(device, &(VkDescriptorSetAllocateInfo){
+			vkAllocateDescriptorSets(device, &(VkDescriptorSetAllocateInfo){
 				.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
 				.descriptorPool     = descriptorPool,
 				.descriptorSetCount = 1,
 				.pSetLayouts        = &descriptorSetLayout
-			}, &descriptorSet)) != VK_SUCCESS)
-				exitVk("vkAllocateDescriptorSets");
+			}, &descriptorSet);
 		} break;
 		case WM_DESTROY: {
 			PostQuitMessage(0);
@@ -779,8 +529,7 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 
 			VkImage swapchainImages[8];
 			VkSurfaceCapabilitiesKHR surfaceCapabilities;
-			if ((r = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, &surfaceCapabilities)) != VK_SUCCESS)
-				exitVk("vkGetPhysicalDeviceSurfaceCapabilitiesKHR");
+			vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, &surfaceCapabilities);
 
 			if (surfaceCapabilities.currentExtent.width == 0 || surfaceCapabilities.currentExtent.height == 0) {
 				// TODO
@@ -812,12 +561,10 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 				.oldSwapchain     = swapchain
 			};
 
-			if ((r = vkCreateSwapchainKHR(device, &swapchainCreateInfo, NULL, &swapchain)) != VK_SUCCESS)
-				exitVk("vkCreateSwapchainKHR");
+			vkCreateSwapchainKHR(device, &swapchainCreateInfo, NULL, &swapchain);
 
 			if (swapchainCreateInfo.oldSwapchain != VK_NULL_HANDLE) {
-				if ((r = vkDeviceWaitIdle(device)) != VK_SUCCESS)
-					exitVk("vkDeviceWaitIdle");
+				vkDeviceWaitIdle(device);
 
 				vkDestroyFramebuffer(device, framebuffer, NULL);
 
@@ -837,10 +584,9 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 			}
 
 			swapchainImagesCount = ARRAY_COUNT(swapchainImages);
-			if ((r = vkGetSwapchainImagesKHR(device, swapchain, &swapchainImagesCount, swapchainImages)) != VK_SUCCESS)
-				exitVk("vkGetSwapchainImagesKHR");
+			vkGetSwapchainImagesKHR(device, swapchain, &swapchainImagesCount, swapchainImages);
 
-			if ((r = vkCreateImage(device, &(VkImageCreateInfo){
+			vkCreateImage(device, &(VkImageCreateInfo){
 				.sType        = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
 				.imageType    = VK_IMAGE_TYPE_2D,
 				.format       = VK_FORMAT_R16G16B16A16_SFLOAT,
@@ -854,11 +600,10 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 				.samples      = VK_SAMPLE_COUNT_1_BIT,
 				.tiling       = VK_IMAGE_TILING_OPTIMAL,
 				.usage        = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
-			}, NULL, &colorImage)) != VK_SUCCESS)
-				exitVk("vkCreateImage");
+			}, NULL, &colorImage);
 
 			vkGetImageMemoryRequirements(device, colorImage, &memoryRequirements);
-			if ((r = vkAllocateMemory(device, &(VkMemoryAllocateInfo){
+			vkAllocateMemory(device, &(VkMemoryAllocateInfo){
 				.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
 				.pNext           = &(VkMemoryDedicatedAllocateInfo){
 					.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
@@ -866,12 +611,9 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 				},
 				.allocationSize  = memoryRequirements.size,
 				.memoryTypeIndex = getMemoryTypeIndex(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0)
-			}, NULL, &colorDeviceMemory)) != VK_SUCCESS)
-				exitVk("vkAllocateMemory");
-			if ((r = vkBindImageMemory(device, colorImage, colorDeviceMemory, 0)) != VK_SUCCESS)
-				exitVk("vkBindImageMemory");
-
-			if ((r = vkCreateImageView(device, &(VkImageViewCreateInfo){
+			}, NULL, &colorDeviceMemory);
+			vkBindImageMemory(device, colorImage, colorDeviceMemory, 0);
+			vkCreateImageView(device, &(VkImageViewCreateInfo){
 				.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
 				.image            = colorImage,
 				.viewType         = VK_IMAGE_VIEW_TYPE_2D,
@@ -881,10 +623,8 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 					.levelCount = 1,
 					.layerCount = 1
 				}
-			}, NULL, &colorImageView)) != VK_SUCCESS)
-				exitVk("vkCreateImageView");
-
-			if ((r = vkCreateImage(device, &(VkImageCreateInfo){
+			}, NULL, &colorImageView);
+			vkCreateImage(device, &(VkImageCreateInfo){
 				.sType        = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
 				.imageType    = VK_IMAGE_TYPE_2D,
 				.format       = VK_FORMAT_D24_UNORM_S8_UINT,
@@ -898,11 +638,10 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 				.samples      = VK_SAMPLE_COUNT_1_BIT,
 				.tiling       = VK_IMAGE_TILING_OPTIMAL,
 				.usage        = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
-			}, NULL, &depthImage)) != VK_SUCCESS)
-				exitVk("vkCreateImage");
+			}, NULL, &depthImage);
 
 			vkGetImageMemoryRequirements(device, depthImage, &memoryRequirements);
-			if ((r = vkAllocateMemory(device, &(VkMemoryAllocateInfo){
+			vkAllocateMemory(device, &(VkMemoryAllocateInfo){
 				.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
 				.pNext           = &(VkMemoryDedicatedAllocateInfo){
 					.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
@@ -910,12 +649,9 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 				},
 				.allocationSize  = memoryRequirements.size,
 				.memoryTypeIndex = getMemoryTypeIndex(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0)
-			}, NULL, &depthDeviceMemory)) != VK_SUCCESS)
-				exitVk("vkAllocateMemory");
-			if ((r = vkBindImageMemory(device, depthImage, depthDeviceMemory, 0)) != VK_SUCCESS)
-				exitVk("vkBindImageMemory");
-
-			if ((r = vkCreateImageView(device, &(VkImageViewCreateInfo){
+			}, NULL, &depthDeviceMemory);
+			vkBindImageMemory(device, depthImage, depthDeviceMemory, 0);
+			vkCreateImageView(device, &(VkImageViewCreateInfo){
 				.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
 				.image            = depthImage,
 				.viewType         = VK_IMAGE_VIEW_TYPE_2D,
@@ -925,10 +661,9 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 					.levelCount = 1,
 					.layerCount = 1
 				}
-			}, NULL, &depthImageView)) != VK_SUCCESS)
-				exitVk("vkCreateImageView");
+			}, NULL, &depthImageView);
 
-			if ((r = vkCreateFramebuffer(device, &(VkFramebufferCreateInfo){
+			vkCreateFramebuffer(device, &(VkFramebufferCreateInfo){
 				.sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
 				.renderPass      = renderPass,
 				.attachmentCount = 2,
@@ -939,11 +674,10 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 				.width           = surfaceCapabilities.currentExtent.width,
 				.height          = surfaceCapabilities.currentExtent.height,
 				.layers          = 1
-			}, NULL, &framebuffer)) != VK_SUCCESS)
-				exitVk("vkCreateFramebuffer");
+			}, NULL, &framebuffer);
 
 			for (uint32_t i = 0; i < swapchainImagesCount; i++) {
-				if ((r = vkCreateImageView(device, &(VkImageViewCreateInfo){
+				vkCreateImageView(device, &(VkImageViewCreateInfo){
 					.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
 					.image            = swapchainImages[i],
 					.viewType         = VK_IMAGE_VIEW_TYPE_2D,
@@ -953,10 +687,9 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 						.levelCount = 1,
 						.layerCount = 1
 					}
-				}, NULL, &swapchainImageViews[i])) != VK_SUCCESS)
-					exitVk("vkCreateImageView");
+				}, NULL, &swapchainImageViews[i]);
 
-				if ((r = vkCreateFramebuffer(device, &(VkFramebufferCreateInfo){
+				vkCreateFramebuffer(device, &(VkFramebufferCreateInfo){
 					.sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
 					.renderPass      = renderPassBlit,
 					.attachmentCount = 1,
@@ -964,8 +697,7 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 					.width           = surfaceCapabilities.currentExtent.width,
 					.height          = surfaceCapabilities.currentExtent.height,
 					.layers          = 1
-				}, NULL, &swapchainFramebuffers[i])) != VK_SUCCESS)
-					exitVk("vkCreateFramebuffer");
+				}, NULL, &swapchainFramebuffers[i]);
 			}
 
 			vkUpdateDescriptorSets(device, 1, &(VkWriteDescriptorSet){
@@ -989,8 +721,7 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 			}
 		} break;
 		case WM_CLOSE: {
-			if (!DestroyWindow(hWnd))
-				exitWin32("DestroyWindow");
+			DestroyWindow(hWnd);
 		} break;
 		case WM_GETMINMAXINFO: {
 			((MINMAXINFO*)lParam)->ptMinTrackSize.x = 640;
@@ -998,8 +729,7 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 		} break;
 		case WM_INPUT: {
 			RAWINPUT rawInput;
-			if (GetRawInputData((HRAWINPUT)lParam, RID_INPUT, &rawInput, &(UINT){ sizeof(RAWINPUT) }, sizeof(RAWINPUTHEADER)) == (UINT)-1)
-				exitWin32("GetRawInputData");
+			GetRawInputData((HRAWINPUT)lParam, RID_INPUT, &rawInput, &(UINT){ sizeof(RAWINPUT) }, sizeof(RAWINPUTHEADER));
 
 			cameraYaw -= 0.0005f * (float)rawInput.data.mouse.lLastX;
 			cameraPitch -= 0.0005f * (float)rawInput.data.mouse.lLastY;
@@ -1025,31 +755,17 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 					static WINDOWPLACEMENT previous = { sizeof(WINDOWPLACEMENT) };
 
 					LONG_PTR style = GetWindowLongPtrW(hWnd, GWL_STYLE);
-					if (!style)
-						exitWin32("GetWindowLongPtrW");
 
 					if (style & WS_OVERLAPPEDWINDOW) {
 						MONITORINFO current = { sizeof(MONITORINFO) };
-						if (!GetWindowPlacement(hWnd, &previous))
-							exitWin32("GetWindowPlacement");
-
-						if (!GetMonitorInfoW(MonitorFromWindow(hWnd, MONITOR_DEFAULTTOPRIMARY), &current))
-							exitWin32("GetMonitorInfoW");
-
-						if (!SetWindowLongPtrW(hWnd, GWL_STYLE, style & ~WS_OVERLAPPEDWINDOW))
-							exitWin32("SetWindowLongPtrW");
-
-						if (!SetWindowPos(hWnd, HWND_TOP, current.rcMonitor.left, current.rcMonitor.top, current.rcMonitor.right - current.rcMonitor.left, current.rcMonitor.bottom - current.rcMonitor.top, SWP_NOOWNERZORDER | SWP_FRAMECHANGED))
-							exitWin32("SetWindowPos");
+						GetWindowPlacement(hWnd, &previous);
+						GetMonitorInfoW(MonitorFromWindow(hWnd, MONITOR_DEFAULTTOPRIMARY), &current);
+						SetWindowLongPtrW(hWnd, GWL_STYLE, style & ~WS_OVERLAPPEDWINDOW);
+						SetWindowPos(hWnd, HWND_TOP, current.rcMonitor.left, current.rcMonitor.top, current.rcMonitor.right - current.rcMonitor.left, current.rcMonitor.bottom - current.rcMonitor.top, SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
 					} else {
-						if (!SetWindowPlacement(hWnd, &previous))
-							exitWin32("SetWindowPlacement");
-
-						if (!SetWindowLongPtrW(hWnd, GWL_STYLE, style | WS_OVERLAPPEDWINDOW))
-							exitWin32("SetWindowLongPtrW");
-
-						if (!SetWindowPos(hWnd, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED))
-							exitWin32("SetWindowPos");
+						SetWindowPlacement(hWnd, &previous);
+						SetWindowLongPtrW(hWnd, GWL_STYLE, style | WS_OVERLAPPEDWINDOW);
+						SetWindowPos(hWnd, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
 					}
 				} break;
 			}
@@ -1073,13 +789,11 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 		} break;
 		case WM_ENTERMENULOOP:
 		case WM_ENTERSIZEMOVE: {
-			if (!SetTimer(hWnd, 1, 1, NULL))
-				exitWin32("SetTimer");
+			SetTimer(hWnd, 1, 1, NULL);
 		} break;
 		case WM_EXITMENULOOP:
 		case WM_EXITSIZEMOVE: {
-			if (!KillTimer(hWnd, 1))
-				exitWin32("KillTimer");
+			KillTimer(hWnd, 1);
 		} break;
 		default: {
 			return DefWindowProcW(hWnd, msg, wParam, lParam);
@@ -1189,11 +903,11 @@ static inline void drawScene(Vec3 cameraPosition, Vec3 xAxis, Vec3 yAxis, Vec3 z
 		vkCmdDrawIndexed(commandBuffer, 36, 1, 0, 0, instanceIndex++);
 	}
 
-	// vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_TRIANGLE]);
-	// vkCmdBindIndexBuffer(commandBuffer, buffers.index.buffer, BUFFER_OFFSET_INDEX_VERTICES, VK_INDEX_TYPE_UINT16);
-	// mvps[instanceIndex] = viewProjection;
-	// materials[instanceIndex] = (Material){ 167, 127, 17, 255 };
-	// vkCmdDraw(commandBuffer, 3, 1, 0, instanceIndex++);
+	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_TRIANGLE]);
+	vkCmdBindIndexBuffer(commandBuffer, buffers.index.buffer, BUFFER_OFFSET_INDEX_VERTICES, VK_INDEX_TYPE_UINT16);
+	mvps[instanceIndex] = viewProjection;
+	materials[instanceIndex] = (Material){ 167, 127, 17, 255 };
+	vkCmdDraw(commandBuffer, 3, 1, 0, instanceIndex++);
 
 	// vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_PARTICLE]);
 	// vkCmdDraw(commandBuffer, 1, 1, 0, 0);
@@ -1221,22 +935,15 @@ void WinMainCRTStartup(void) {
 	generateChunk(&chunk, faces);
 
 	LARGE_INTEGER performanceFrequency;
-	if (!QueryPerformanceFrequency(&performanceFrequency))
-		exitWin32("QueryPerformanceFrequency");
+	QueryPerformanceFrequency(&performanceFrequency);
 
 	LARGE_INTEGER start;
-	if (!QueryPerformanceCounter(&start))
-		exitWin32("QueryPerformanceCounter");
+	QueryPerformanceCounter(&start);
 
-	if (!(hInstance = GetModuleHandleW(NULL)))
-		exitWin32("GetModuleHandleW");
-
-	if (!(mainFiber = ConvertThreadToFiber(NULL)))
-		exitWin32("ConvertThreadToFiber");
+	hInstance = GetModuleHandleW(NULL);
+	mainFiber = ConvertThreadToFiber(NULL);
 
 	LPVOID messageFiber = CreateFiber(0, messageFiberProc, NULL);
-	if (!messageFiber)
-		exitWin32("CreateFiber");
 
 	WNDCLASSEXW windowClass = {
 		.cbSize        = sizeof(WNDCLASSEXW),
@@ -1245,97 +952,69 @@ void WinMainCRTStartup(void) {
 		.lpszClassName = L"a",
 		.hCursor       = LoadImageW(NULL, MAKEINTRESOURCEW(OCR_NORMAL), IMAGE_CURSOR, 0, 0, LR_SHARED)
 	};
-	if (!windowClass.hCursor)
-		exitWin32("LoadImageW");
-
-	if (!RegisterClassExW(&windowClass))
-		exitWin32("RegisterClassExW");
-
-	if (!CreateWindowExW(0, windowClass.lpszClassName, L"Triangle", WS_VISIBLE | WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, NULL, NULL, windowClass.hInstance, NULL))
-		exitWin32("CreateWindowExW");
+	RegisterClassExW(&windowClass);
+	CreateWindowExW(0, windowClass.lpszClassName, L"Triangle", WS_VISIBLE | WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, NULL, NULL, windowClass.hInstance, NULL);
 
 	WSADATA wsaData;
-	int wsaError = WSAStartup(MAKEWORD(2, 2), &wsaData);
-	if (wsaError != 0)
-		exitError("WSAStartup", wsaError);
-
+	WSAStartup(MAKEWORD(2, 2), &wsaData);
 	SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-	if (sock == INVALID_SOCKET)
-		exitWSA("socket");
+	ioctlsocket(sock, FIONBIO, &(u_long){ 1 });
 
-	if (ioctlsocket(sock, FIONBIO, &(u_long){ 1 }))
-		exitWSA("ioctlsocket");
-
-	if (bind(sock, (struct sockaddr*)&(struct sockaddr_in){
+	bind(sock, (struct sockaddr*)&(struct sockaddr_in){
 		.sin_family      = AF_INET,
 		.sin_addr.s_addr = htonl(INADDR_ANY),
 		.sin_port        = htons(9000)
-	}, sizeof(struct sockaddr_in)) == SOCKET_ERROR)
-		exitWSA("bind");
+	}, sizeof(struct sockaddr_in));
 
-	if (FAILED(hr = CoInitializeEx(NULL, COINIT_SPEED_OVER_MEMORY)))
-		exitHRESULT("CoInitializeEx");
+	CoInitializeEx(NULL, COINIT_SPEED_OVER_MEMORY);
 
 	IMMDeviceEnumerator* enumerator;
 	IMMDevice* audioDevice;
 	IAudioClient* audioClient;
-	// IAudioRenderClient* audioRenderClient;
-	WAVEFORMATEX waveFormat = {
-		.wFormatTag      = WAVE_FORMAT_EXTENSIBLE,
+	IAudioRenderClient* audioRenderClient;
+	WAVEFORMATEX waveFormat    = {
+		.wFormatTag      = WAVE_FORMAT_PCM,
 		.nChannels       = 2,
-		.nSamplesPerSec  = 480000,
-		.wBitsPerSample  = sizeof(float) * 8,
-		.nBlockAlign     = (waveFormat.wBitsPerSample / 8) * waveFormat.nChannels,
-		.nAvgBytesPerSec = waveFormat.nSamplesPerSec * waveFormat.nBlockAlign,
-		.cbSize          = sizeof(WAVEFORMATEX)
+		.nSamplesPerSec  = 44100,
+		.wBitsPerSample  = sizeof(uint16_t) * 8,
 	};
-	// UINT32 bufferSize;
+	waveFormat.nBlockAlign     = (waveFormat.nChannels * waveFormat.wBitsPerSample) / 8;
+	waveFormat.nAvgBytesPerSec = waveFormat.nSamplesPerSec * waveFormat.nBlockAlign;
+	UINT32 bufferSize;
 
-	if (FAILED(hr = CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, &IID_IMMDeviceEnumerator, (void**)&enumerator)))
-		exitHRESULT("CoCreateInstance");
-	if (FAILED(hr = enumerator->lpVtbl->GetDefaultAudioEndpoint(enumerator, eRender, eConsole, &audioDevice)))
-		exitHRESULT("IMMDeviceEnumerator::GetDefaultAudioEndpoint");
-	if (FAILED(hr = audioDevice->lpVtbl->Activate(audioDevice, &IID_IAudioClient, CLSCTX_ALL, NULL, (void**)&audioClient)))
-		exitHRESULT("IMMDevice::Activate");
-	// if (FAILED(hr = audioClient->lpVtbl->Initialize(audioClient, AUDCLNT_SHAREMODE_SHARED, 0, 10000000, 0, &waveFormat, NULL)))
-	// 	exitHRESULT("IAudioClient::Initialize");
-	// if (FAILED(hr = audioClient->lpVtbl->GetService(audioClient, &IID_IAudioRenderClient, (void**)&audioRenderClient)))
-	// 	exitHRESULT("IAudioClient::GetService");
-	// if (FAILED(hr = audioClient->lpVtbl->GetBufferSize(audioClient, &bufferSize)))
-	// 	exitHRESULT("IAudioClient::GetBufferSize");
-	// if (FAILED(hr = audioClient->lpVtbl->Start(audioClient)))
-	// 	exitHRESULT("IAudioClient::Start");
+	CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, &IID_IMMDeviceEnumerator, (void**)&enumerator);
+	enumerator->lpVtbl->GetDefaultAudioEndpoint(enumerator, eRender, eConsole, &audioDevice);
+	audioDevice->lpVtbl->Activate(audioDevice, &IID_IAudioClient, CLSCTX_ALL, NULL, (void**)&audioClient);
+	audioClient->lpVtbl->Initialize(audioClient, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, 10000000, 0, &waveFormat, NULL);
+	audioClient->lpVtbl->GetService(audioClient, &IID_IAudioRenderClient, (void**)&audioRenderClient);
+	audioClient->lpVtbl->GetBufferSize(audioClient, &bufferSize);
+	audioClient->lpVtbl->Start(audioClient);
 
 	vkGetDeviceQueue(device, queueFamilyIndex, 0, &queue);
 	for (uint32_t i = 0; i < FRAMES_IN_FLIGHT; i++) {
-		if ((r = vkCreateCommandPool(device, &(VkCommandPoolCreateInfo){
+		vkCreateCommandPool(device, &(VkCommandPoolCreateInfo){
 			.sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
 			.queueFamilyIndex = queueFamilyIndex
-		}, NULL, &commandPools[i])) != VK_SUCCESS)
-			exitVk("vkCreateCommandPool");
+		}, NULL, &commandPools[i]);
 
-		if ((r = vkAllocateCommandBuffers(device, &(VkCommandBufferAllocateInfo){
+		vkAllocateCommandBuffers(device, &(VkCommandBufferAllocateInfo){
 			.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
 			.commandPool        = commandPools[i],
 			.commandBufferCount = 1
-		}, &commandBuffers[i])) != VK_SUCCESS)
-			exitVk("vkAllocateCommandBuffers");
+		}, &commandBuffers[i]);
 
-		if ((r = vkCreateFence(device, &(VkFenceCreateInfo){
+		vkCreateFence(device, &(VkFenceCreateInfo){
 			.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
 			.flags = i > 0 ? VK_FENCE_CREATE_SIGNALED_BIT : 0
-		}, NULL, &fences[i])) != VK_SUCCESS)
-			exitVk("vkCreateFence");
+		}, NULL, &fences[i]);
 
-		if ((r = vkCreateSemaphore(device, &(VkSemaphoreCreateInfo){
+		vkCreateSemaphore(device, &(VkSemaphoreCreateInfo){
 			.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO
-		}, NULL, &imageAcquireSemaphores[i])) != VK_SUCCESS)
-			exitVk("vkCreateSemaphore");
+		}, NULL, &imageAcquireSemaphores[i]);
 
-		if ((r = vkCreateSemaphore(device, &(VkSemaphoreCreateInfo){
+		vkCreateSemaphore(device, &(VkSemaphoreCreateInfo){
 			.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO
-		}, NULL, &semaphores[i])) != VK_SUCCESS)
-			exitVk("vkCreateSemaphore");
+		}, NULL, &semaphores[i]);
 	}
 
 	for (uint32_t i = 0; i < ARRAY_COUNT(quadIndices); i += 6) {
@@ -1349,16 +1028,15 @@ void WinMainCRTStartup(void) {
 
 	for (uint32_t i = 0; i < sizeof(buffers) / sizeof(Buffer); i++) {
 		Buffer* b = (Buffer*)((char*)&buffers + (i * sizeof(Buffer)));
-		if ((r = vkCreateBuffer(device, &(VkBufferCreateInfo){
+		vkCreateBuffer(device, &(VkBufferCreateInfo){
 			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
 			.size  = b->size,
 			.usage = b->usage
-		}, NULL, &b->buffer)) != VK_SUCCESS)
-			exitVk("vkCreateBuffer");
+		}, NULL, &b->buffer);
 
 		vkGetBufferMemoryRequirements(device, b->buffer, &memoryRequirements);
 
-		if ((r = vkAllocateMemory(device, &(VkMemoryAllocateInfo){
+		vkAllocateMemory(device, &(VkMemoryAllocateInfo){
 			.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
 			.pNext           = &(VkMemoryDedicatedAllocateInfo){
 				.sType  = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
@@ -1366,27 +1044,22 @@ void WinMainCRTStartup(void) {
 			},
 			.allocationSize  = memoryRequirements.size,
 			.memoryTypeIndex = getMemoryTypeIndex(b->requiredMemoryPropertyFlagBits, b->optionalMemoryPropertyFlagBits)
-		}, NULL, &b->deviceMemory)) != VK_SUCCESS)
-			exitVk("vkAllocateMemory");
+		}, NULL, &b->deviceMemory);
 
-		if ((r = vkBindBufferMemory(device, b->buffer, b->deviceMemory, 0)) != VK_SUCCESS)
-			exitVk("vkBindImageMemory");
+		vkBindBufferMemory(device, b->buffer, b->deviceMemory, 0);
 
-		if (b->requiredMemoryPropertyFlagBits & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
-			if ((r = vkMapMemory(device, b->deviceMemory, 0, VK_WHOLE_SIZE, 0, &b->data)) != VK_SUCCESS)
-				exitVk("vkMapMemory");
-		}
+		if (b->requiredMemoryPropertyFlagBits & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+			vkMapMemory(device, b->deviceMemory, 0, VK_WHOLE_SIZE, 0, &b->data);
 	}
 
 	memcpy(buffers.staging.data, vertexPositions, sizeof(vertexPositions));
 	memcpy(buffers.staging.data + BUFFER_RANGE_VERTEX_POSITIONS, vertexIndices, sizeof(vertexIndices));
 	memcpy(buffers.staging.data + BUFFER_RANGE_VERTEX_POSITIONS + BUFFER_RANGE_INDEX_VERTICES, quadIndices, sizeof(quadIndices));
 
-	if ((r = vkBeginCommandBuffer(commandBuffers[frame], &(VkCommandBufferBeginInfo){
+	vkBeginCommandBuffer(commandBuffers[frame], &(VkCommandBufferBeginInfo){
 		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
 		.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
-	})) != VK_SUCCESS)
-		exitVk("vkBeginCommandBuffer");
+	});
 
 	vkCmdCopyBuffer(commandBuffers[frame], buffers.staging.buffer, buffers.vertex.buffer, 1, &(VkBufferCopy){
 		.srcOffset = 0,
@@ -1405,16 +1078,14 @@ void WinMainCRTStartup(void) {
 		}
 	});
 
-	if ((r = vkEndCommandBuffer(commandBuffers[frame])) != VK_SUCCESS)
-		exitVk("vkEndCommandBuffer");
-	if ((r = vkQueueSubmit(queue, 1, &(VkSubmitInfo){
+	vkEndCommandBuffer(commandBuffers[frame]);
+	vkQueueSubmit(queue, 1, &(VkSubmitInfo){
 		.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO,
 		.commandBufferCount = 1,
 		.pCommandBuffers    = &commandBuffers[frame]
-	}, fences[frame])) != VK_SUCCESS)
-		exitVk("vkQueueSubmit");
+	}, fences[frame]);
 
-	if ((r = vkCreatePipelineLayout(device, &(VkPipelineLayoutCreateInfo){
+	vkCreatePipelineLayout(device, &(VkPipelineLayoutCreateInfo){
 		.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
 		.setLayoutCount         = 1,
 		.pSetLayouts            = &descriptorSetLayout,
@@ -1424,75 +1095,63 @@ void WinMainCRTStartup(void) {
 			.offset     = 0,
 			.size       = sizeof(Mat4)
 		}
-	}, NULL, &pipelineLayout)) != VK_SUCCESS)
-		exitVk("vkCreatePipelineLayout");
+	}, NULL, &pipelineLayout);
 
-	if ((r = vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
+	vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
 		.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
 		.pCode    = blit_vert,
 		.codeSize = sizeof(blit_vert)
-	}, NULL, &blitVert)) != VK_SUCCESS)
-		exitVk("vkCreateShaderModule");
-	if ((r = vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
+	}, NULL, &blitVert);
+	vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
 		.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
 		.pCode    = blit_frag,
 		.codeSize = sizeof(blit_frag)
-	}, NULL, &blitFrag)) != VK_SUCCESS)
-		exitVk("vkCreateShaderModule");
-	if ((r = vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
+	}, NULL, &blitFrag);
+	vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
 		.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
 		.pCode    = triangle_vert,
 		.codeSize = sizeof(triangle_vert)
-	}, NULL, &triangleVert)) != VK_SUCCESS)
-		exitVk("vkCreateShaderModule");
-	if ((r = vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
+	}, NULL, &triangleVert);
+	vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
 		.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
 		.pCode    = triangle_frag,
 		.codeSize = sizeof(triangle_frag)
-	}, NULL, &triangleFrag)) != VK_SUCCESS)
-		exitVk("vkCreateShaderModule");
-	if ((r = vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
+	}, NULL, &triangleFrag);
+	vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
 		.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
 		.pCode    = skybox_vert,
 		.codeSize = sizeof(skybox_vert)
-	}, NULL, &skyboxVert)) != VK_SUCCESS)
-		exitVk("vkCreateShaderModule");
-	if ((r = vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
+	}, NULL, &skyboxVert);
+	vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
 		.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
 		.pCode    = skybox_frag,
 		.codeSize = sizeof(skybox_frag)
-	}, NULL, &skyboxFrag)) != VK_SUCCESS)
-		exitVk("vkCreateShaderModule");
-	if ((r = vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
+	}, NULL, &skyboxFrag);
+	vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
 		.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
 		.pCode    = particle_vert,
 		.codeSize = sizeof(particle_vert)
-	}, NULL, &particleVert)) != VK_SUCCESS)
-		exitVk("vkCreateShaderModule");
-	if ((r = vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
+	}, NULL, &particleVert);
+	vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
 		.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
 		.pCode    = particle_frag,
 		.codeSize = sizeof(particle_frag)
-	}, NULL, &particleFrag)) != VK_SUCCESS)
-		exitVk("vkCreateShaderModule");
-	if ((r = vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
+	}, NULL, &particleFrag);
+	vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
 		.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
 		.pCode    = portal_vert,
 		.codeSize = sizeof(portal_vert)
-	}, NULL, &portalVert)) != VK_SUCCESS)
-		exitVk("vkCreateShaderModule");
-	if ((r = vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
+	}, NULL, &portalVert);
+	vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
 		.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
 		.pCode    = portal_frag,
 		.codeSize = sizeof(portal_frag)
-	}, NULL, &portalFrag)) != VK_SUCCESS)
-		exitVk("vkCreateShaderModule");
-	if ((r = vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
+	}, NULL, &portalFrag);
+	vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
 		.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
 		.pCode    = voxel_vert,
 		.codeSize = sizeof(voxel_vert)
-	}, NULL, &voxelVert)) != VK_SUCCESS)
-		exitVk("vkCreateShaderModule");
+	}, NULL, &voxelVert);
 
 	VkPipelineShaderStageCreateInfo shaderStagesBlit[] = {
 		{
@@ -1860,7 +1519,7 @@ void WinMainCRTStartup(void) {
 		}
 	};
 
-	if ((r = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, GRAPHICS_PIPELINE_MAX, (VkGraphicsPipelineCreateInfo[]){
+	vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, GRAPHICS_PIPELINE_MAX, (VkGraphicsPipelineCreateInfo[]){
 		[GRAPHICS_PIPELINE_BLIT] = {
 			.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
 			.stageCount          = ARRAY_COUNT(shaderStagesBlit),
@@ -1960,8 +1619,7 @@ void WinMainCRTStartup(void) {
 			.layout              = pipelineLayout,
 			.renderPass          = renderPass
 		}
-	}, NULL, graphicsPipelines)) != VK_SUCCESS)
-		exitVk("vkCreateGraphicsPipelines");
+	}, NULL, graphicsPipelines);
 
 	// if ((r = vkWaitForFences(device, 1, &fences[frame], VK_FALSE, UINT64_MAX)) != VK_SUCCESS)
 	// 	exitVk("vkWaitForFences");
@@ -1981,16 +1639,10 @@ void WinMainCRTStartup(void) {
 		int n;
 		while (({
 			n = recvfrom(sock, buff, sizeof(buff), 0, (struct sockaddr*)&clientAddr, &(int){ sizeof(struct sockaddr_in) });
-			if (n == SOCKET_ERROR) {
-				int err = WSAGetLastError();
-				if (err != WSAEWOULDBLOCK)
-					exitWSA("recvfrom");
-			}
 			n > 0;
 		})) {
 			char str[INET_ADDRSTRLEN];
-			if (inet_ntop(AF_INET, &clientAddr.sin_addr, str, sizeof(str)) == NULL)
-				exitWSA("inet_ntop");
+			inet_ntop(AF_INET, &clientAddr.sin_addr, str, sizeof(str));
 
 			char ABC[1024];
 			sprintf(ABC, "Received %d bytes from %s:%d\n%s\n", n, str, ntohs(clientAddr.sin_port), buff);
@@ -1999,8 +1651,7 @@ void WinMainCRTStartup(void) {
 
 		while (({
 			LARGE_INTEGER now;
-			if (!QueryPerformanceCounter(&now))
-				exitWin32("QueryPerformanceCounter");
+			QueryPerformanceCounter(&now);
 
 			uint64_t targetTicksElapsed = ((now.QuadPart - start.QuadPart) * TICKS_PER_SECOND) / performanceFrequency.QuadPart;
 			ticksElapsed < targetTicksElapsed;
@@ -2039,10 +1690,10 @@ void WinMainCRTStartup(void) {
 			ticksElapsed++;
 		}
 
-		commandBuffer    = commandBuffers[frame];
-		instanceIndex    = 0;
-		mvps             = buffers.instance.data + BUFFER_OFFSET_INSTANCE_MVPS + (frame * BUFFER_RANGE_INSTANCE_MVPS);
-		materials        = buffers.instance.data + BUFFER_OFFSET_INSTANCE_MATERIALS + (frame * BUFFER_RANGE_INSTANCE_MATERIALS);
+		commandBuffer = commandBuffers[frame];
+		instanceIndex = 0;
+		mvps          = buffers.instance.data + BUFFER_OFFSET_INSTANCE_MVPS + (frame * BUFFER_RANGE_INSTANCE_MVPS);
+		materials     = buffers.instance.data + BUFFER_OFFSET_INSTANCE_MATERIALS + (frame * BUFFER_RANGE_INSTANCE_MATERIALS);
 
 		Vec3 xAxis     = { cy, 0, -sy };
 		Vec3 yAxis     = { sy * sp, cp, cy * sp };
@@ -2053,19 +1704,14 @@ void WinMainCRTStartup(void) {
 		models[1] = mat4FromRotationTranslationScale(quatIdentity(), (Vec3){  20.f, 0.f, 0.f }, (Vec3){ 20.f, 1.f, 20.f });
 
 		uint32_t imageIndex;
-		if ((r = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, imageAcquireSemaphores[frame], VK_NULL_HANDLE, &imageIndex)) != VK_SUCCESS)
-			exitVk("vkAcquireNextImageKHR");
-		if ((r = vkWaitForFences(device, 1, &fences[frame], VK_TRUE, UINT64_MAX)) != VK_SUCCESS)
-			exitVk("vkWaitForFences");
-		if ((r = vkResetFences(device, 1, &fences[frame])) != VK_SUCCESS)
-			exitVk("vkResetFences");
-		if ((r = vkResetCommandPool(device, commandPools[frame], 0)) != VK_SUCCESS)
-			exitVk("vkResetCommandPool");
-		if ((r = vkBeginCommandBuffer(commandBuffer, &(VkCommandBufferBeginInfo){
+		vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, imageAcquireSemaphores[frame], VK_NULL_HANDLE, &imageIndex);
+		vkWaitForFences(device, 1, &fences[frame], VK_TRUE, UINT64_MAX);
+		vkResetFences(device, 1, &fences[frame]);
+		vkResetCommandPool(device, commandPools[frame], 0);
+		vkBeginCommandBuffer(commandBuffer, &(VkCommandBufferBeginInfo){
 			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
 			.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
-		})) != VK_SUCCESS)
-			exitVk("vkBeginCommandBuffer");
+		});
 
 		vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 1, &(uint32_t){ 0 });
 		vkCmdBindVertexBuffers(commandBuffer, 0, 4, (VkBuffer[]){
@@ -2110,9 +1756,8 @@ void WinMainCRTStartup(void) {
 
 		vkCmdEndRenderPass(commandBuffer);
 
-		if ((r = vkEndCommandBuffer(commandBuffer)) != VK_SUCCESS)
-			exitVk("vkEndCommandBuffer");
-		if ((r = vkQueueSubmit(queue, 1, &(VkSubmitInfo){
+		vkEndCommandBuffer(commandBuffer);
+		vkQueueSubmit(queue, 1, &(VkSubmitInfo){
 			.sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO,
 			.waitSemaphoreCount   = 1,
 			.pWaitSemaphores      = &imageAcquireSemaphores[frame],
@@ -2121,17 +1766,15 @@ void WinMainCRTStartup(void) {
 			.pCommandBuffers      = &commandBuffer,
 			.signalSemaphoreCount = 1,
 			.pSignalSemaphores    = &semaphores[frame]
-		}, fences[frame])) != VK_SUCCESS)
-			exitVk("vkQueueSubmit");
-		if ((r = vkQueuePresentKHR(queue, &(VkPresentInfoKHR){
+		}, fences[frame]);
+		vkQueuePresentKHR(queue, &(VkPresentInfoKHR){
 			.sType              = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
 			.waitSemaphoreCount = 1,
 			.pWaitSemaphores    = &semaphores[frame],
 			.swapchainCount     = 1,
 			.pSwapchains        = &swapchain,
 			.pImageIndices      = &imageIndex
-		})) != VK_SUCCESS)
-			exitVk("vkQueuePresentKHR");
+		});
 
 		frame = (frame + 1) % FRAMES_IN_FLIGHT;
 	}

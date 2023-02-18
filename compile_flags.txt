@@ -1,3 +1,2 @@
 -Iinclude
 -fenable-matrix
--Wall

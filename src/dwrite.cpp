@@ -64,29 +64,18 @@ struct MyRender : IDWriteTextRenderer {
 	}
 };
 
-
-extern "C" {
-	extern HRESULT hr;
-	extern void exitHRESULT(const char* function);
-};
-
 extern "C" void abc(void) {
 	IDWriteTextFormat* format;
 
 	const DWORD width = 256;
 	const DWORD height = 256;
 
-	if (FAILED(hr = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), (IUnknown**)&factory)))
-		exitHRESULT("DWriteCreateFactory");
-	if (FAILED(hr = factory->CreateTextFormat(L"Comic Sans MS", NULL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 24.f, L"en-us", &format)))
-		exitHRESULT("IDWriteFactory::CreateTextFormat");
-	if (FAILED(hr = factory->CreateRenderingParams(&params)))
-		exitHRESULT("IDWriteFactory::CreateRenderingParams");
-	if (FAILED(hr = factory->GetGdiInterop(&gdi)))
-		exitHRESULT("IDWriteFactory::GetGdiInterop");
+	DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), (IUnknown**)&factory);
+	factory->CreateTextFormat(L"Comic Sans MS", NULL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 24.f, L"en-us", &format);
+	factory->CreateRenderingParams(&params);
+	factory->GetGdiInterop(&gdi);
 
-	if (FAILED(hr = gdi->CreateBitmapRenderTarget(NULL, width, height, &target)))
-		exitHRESULT("IDWriteGdiInterop::CreateBitmapRenderTarget");
+	gdi->CreateBitmapRenderTarget(NULL, width, height, &target);
 
 	MyRender renderer;
 	color = RGB(0, 255, 0);
@@ -94,10 +83,8 @@ extern "C" void abc(void) {
 	const WCHAR text[] = L"Hello 😂 World!";
 
 	IDWriteTextLayout* layout;
-	if (FAILED(hr = factory->CreateTextLayout(text, _countof(text) - 1, format, width, 0, &layout)))
-		exitHRESULT("IDWriteFactory::CreateTextLayout");
-	if (FAILED(hr = layout->Draw(NULL, &renderer, 0.f, 0.f)))
-		exitHRESULT("IDWriteTextLayout::Draw");
+	factory->CreateTextLayout(text, _countof(text) - 1, format, width, 0, &layout);
+	layout->Draw(NULL, &renderer, 0.f, 0.f);
 	layout->Release();
 
 	// the memory bitmap is always 32-bit top-down
@@ -107,27 +94,27 @@ extern "C" void abc(void) {
 	DIBSECTION dib;
 	GetObjectW(bitmap, sizeof(dib), &dib);
 
-	HANDLE f = CreateFileA("test.bmp", GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+	// HANDLE f = CreateFileA("test.bmp", GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 
-	BITMAPINFOHEADER header = {};
-	header.biSize = sizeof(header);
-	header.biWidth = width;
-	header.biHeight = -height; // vertical flip
-	header.biPlanes = 1;
-	header.biBitCount = 32;
-	header.biCompression = BI_RGB;
+	// BITMAPINFOHEADER header = {};
+	// header.biSize = sizeof(header);
+	// header.biWidth = width;
+	// header.biHeight = -height; // vertical flip
+	// header.biPlanes = 1;
+	// header.biBitCount = 32;
+	// header.biCompression = BI_RGB;
 
-	BITMAPFILEHEADER bmp;
-	bmp.bfType = 'B' + ('M' << 8);
-	bmp.bfSize = sizeof(bmp) + sizeof(header) + height * dib.dsBm.bmWidthBytes;
-	bmp.bfOffBits = sizeof(bmp) + sizeof(header);
+	// BITMAPFILEHEADER bmp;
+	// bmp.bfType = 'B' + ('M' << 8);
+	// bmp.bfSize = sizeof(bmp) + sizeof(header) + height * dib.dsBm.bmWidthBytes;
+	// bmp.bfOffBits = sizeof(bmp) + sizeof(header);
 
-	DWORD written;
-	WriteFile(f, &bmp, sizeof(bmp), &written, NULL);
-	WriteFile(f, &header, sizeof(header), &written, NULL);
-	WriteFile(f, dib.dsBm.bmBits, height * dib.dsBm.bmWidthBytes, &written, NULL);
+	// DWORD written;
+	// WriteFile(f, &bmp, sizeof(bmp), &written, NULL);
+	// WriteFile(f, &header, sizeof(header), &written, NULL);
+	// WriteFile(f, dib.dsBm.bmBits, height * dib.dsBm.bmWidthBytes, &written, NULL);
 
-	CloseHandle(f);
+	// CloseHandle(f);
 
 	format->Release();
 }
