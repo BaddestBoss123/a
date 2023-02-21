@@ -4,7 +4,7 @@
 #pragma comment(lib, "ucrt.lib")
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "ole32.lib")
-#pragma comment (lib, "dwrite.lib")
+#pragma comment(lib, "dwrite.lib")
 
 #define TICKS_PER_SECOND 50
 #define FRAMES_IN_FLIGHT 2
@@ -28,8 +28,8 @@
 #include <ws2tcpip.h>
 
 #include "macros.h"
+#include "assets.h"
 
-#include "shaders/blit.vert.h"
 #include "shaders/blit.frag.h"
 #include "shaders/triangle.vert.h"
 #include "shaders/triangle.frag.h"
@@ -38,9 +38,9 @@
 #include "shaders/particle.vert.h"
 #include "shaders/particle.frag.h"
 #include "shaders/portal.vert.h"
-#include "shaders/portal.frag.h"
 #include "shaders/voxel.vert.h"
-#include "assets/assets.h"
+
+INCBIN(shaders_spv, "shaders.spv");
 
 #define F(fn) static PFN_##fn fn;
 	BEFORE_INSTANCE_FUNCS(F)
@@ -48,7 +48,7 @@
 	DEVICE_FUNCS(F)
 #undef F
 
-typedef enum Input {
+enum Input {
 	INPUT_START_LEFT    = 0x0001,
 	INPUT_START_FORWARD = 0x0002,
 	INPUT_START_RIGHT   = 0x0004,
@@ -62,9 +62,9 @@ typedef enum Input {
 	INPUT_STOP_DOWN     = 0x0400,
 	INPUT_STOP_UP       = 0x0800,
 	INPUT_LOCK_CURSOR   = 0x1000
-} Input;
+};
 
-typedef enum GraphicsPipeline {
+enum GraphicsPipeline {
 	GRAPHICS_PIPELINE_BLIT,
 	GRAPHICS_PIPELINE_TRIANGLE,
 	GRAPHICS_PIPELINE_SKYBOX,
@@ -73,9 +73,9 @@ typedef enum GraphicsPipeline {
 	GRAPHICS_PIPELINE_PORTAL_DEPTH,
 	GRAPHICS_PIPELINE_VOXEL,
 	GRAPHICS_PIPELINE_MAX
-} GraphicsPipeline;
+};
 
-typedef struct Buffer {
+struct Buffer {
 	VkBuffer buffer;
 	VkDeviceMemory deviceMemory;
 	void* data;
@@ -83,9 +83,9 @@ typedef struct Buffer {
 	VkBufferUsageFlags usage;
 	VkMemoryPropertyFlags requiredMemoryPropertyFlagBits;
 	VkMemoryPropertyFlags optionalMemoryPropertyFlagBits;
-} Buffer;
+};
 
-typedef struct Entity {
+struct Entity {
 	Vec3 translation;
 	Quat rotation;
 	Vec3 scale;
@@ -93,14 +93,14 @@ typedef struct Entity {
 	Mesh* mesh;
 	struct Entity** children;
 	uint32_t childCount;
-} Entity;
+};
 
-typedef struct Portal {
+struct Portal {
 	Vec3 translation;
 	Quat rotation;
 	Vec3 scale;
 	uint32_t link;
-} Portal;
+};
 
 // typedef struct Scene {
 // 	Entity* root;
@@ -120,31 +120,31 @@ static float vertexPositions[] = {
 };
 static uint16_t quadIndices[48];
 
-typedef enum BufferRanges {
+enum BufferRanges {
 	BUFFER_RANGE_INDEX_VERTICES     = ALIGN_FORWARD(sizeof(vertexIndices), 256),
 	BUFFER_RANGE_INDEX_QUADS        = ALIGN_FORWARD(sizeof(quadIndices), 256),
 	BUFFER_RANGE_VERTEX_POSITIONS   = ALIGN_FORWARD(sizeof(vertexPositions), 256),
 	BUFFER_RANGE_PARTICLES          = ALIGN_FORWARD(MAX_PARTICLES, 256),
 	BUFFER_RANGE_INSTANCE_MVPS      = ALIGN_FORWARD(MAX_INSTANCES * sizeof(Mat4), 256),
 	BUFFER_RANGE_INSTANCE_MATERIALS = ALIGN_FORWARD(MAX_INSTANCES * sizeof(Material), 256)
-} BufferRanges;
+};
 
-typedef enum BufferOffsets {
+enum BufferOffsets {
 	BUFFER_OFFSET_INDEX_VERTICES     = 0,
 	BUFFER_OFFSET_INDEX_QUADS        = 0,
 	BUFFER_OFFSET_VERTEX_POSITIONS   = 0,
 	BUFFER_OFFSET_PARTICLES          = 0,
 	BUFFER_OFFSET_INSTANCE_MVPS      = FRAMES_IN_FLIGHT * 0,
 	BUFFER_OFFSET_INSTANCE_MATERIALS = FRAMES_IN_FLIGHT * BUFFER_RANGE_INSTANCE_MVPS
-} BufferOffsets;
+};
 
 static struct {
-	Buffer staging;
-	Buffer index;
-	Buffer vertex;
-	Buffer particles;
-	Buffer instance;
-	Buffer uniform;
+	struct Buffer staging;
+	struct Buffer index;
+	struct Buffer vertex;
+	struct Buffer particles;
+	struct Buffer instance;
+	struct Buffer uniform;
 } buffers = {
 	.staging   = {
 		.size                           = 32 * 1024 * 1024,
@@ -207,7 +207,6 @@ static VkCommandBuffer commandBuffers[FRAMES_IN_FLIGHT];
 static VkFence fences[FRAMES_IN_FLIGHT];
 static VkSemaphore imageAcquireSemaphores[FRAMES_IN_FLIGHT];
 static VkSemaphore semaphores[FRAMES_IN_FLIGHT];
-static VkShaderModule blitVert;
 static VkShaderModule blitFrag;
 static VkShaderModule triangleVert;
 static VkShaderModule triangleFrag;
@@ -216,7 +215,6 @@ static VkShaderModule skyboxFrag;
 static VkShaderModule particleVert;
 static VkShaderModule particleFrag;
 static VkShaderModule portalVert;
-static VkShaderModule portalFrag;
 static VkShaderModule voxelVert;
 static VkViewport viewport = {
 	.minDepth = 0.0,
@@ -228,7 +226,7 @@ static LPVOID mainFiber;
 static uint64_t ticksElapsed;
 static uint64_t input;
 
-static Entity player;
+static struct Entity player;
 static Mat4 projectionMatrix;
 static Vec3 cameraPosition;
 static float cameraYaw;
@@ -236,7 +234,7 @@ static float cameraPitch;
 static const float cameraFieldOfView = 0.78f;
 static const float cameraNear        = 0.1f;
 
-static Portal portals[] = {
+static struct Portal portals[] = {
 	{
 		.translation = { -20.f, 3.f, 0.f },
 		.rotation    = { 0, 0, 0, 1 },
@@ -291,19 +289,17 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 			BEFORE_INSTANCE_FUNCS(F)
 			#undef F
 
-			VkApplicationInfo applicationInfo = {
-				.sType              = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-				.pApplicationName   = "triangle",
-				.applicationVersion = 1,
-				.pEngineName        = "Extreme Engine",
-				.engineVersion      = 1,
-				.apiVersion         = VK_API_VERSION_1_0
-			};
-
 			VkInstance instance;
 			vkCreateInstance(&(VkInstanceCreateInfo){
 				.sType                   = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-				.pApplicationInfo        = &applicationInfo,
+				.pApplicationInfo        = &(VkApplicationInfo){
+					.sType      = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+					// .pApplicationName   = "triangle",
+					// .applicationVersion = 1,
+					// .pEngineName        = "Extreme Engine",
+					// .engineVersion      = 1,
+					.apiVersion = VK_API_VERSION_1_1 // STUPID VALIDATION LAYER
+				},
 				.enabledExtensionCount   = 2,
 				.ppEnabledExtensionNames = (const char*[]){
 					VK_KHR_SURFACE_EXTENSION_NAME,
@@ -322,10 +318,9 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 			}, NULL, &surface);
 
 			vkEnumeratePhysicalDevices(instance, &(uint32_t){ 1 }, &physicalDevice);
-			VkPhysicalDeviceFeatures availablePhysicalDeviceFeatures;
 			vkGetPhysicalDeviceMemoryProperties(physicalDevice, &physicalDeviceMemoryProperties);
 			vkGetPhysicalDeviceProperties(physicalDevice, &physicalDeviceProperties);
-			vkGetPhysicalDeviceFeatures(physicalDevice, &availablePhysicalDeviceFeatures);
+			vkGetPhysicalDeviceFeatures(physicalDevice, &physicalDeviceFeatures);
 
 			VkSurfaceFormatKHR surfaceFormats[16];
 			uint32_t surfaceFormatCount = ARRAY_COUNT(surfaceFormats);
@@ -355,7 +350,7 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 				}
 			}
 
-			VkDeviceCreateInfo deviceCreateInfo = {
+			vkCreateDevice(physicalDevice, &(VkDeviceCreateInfo){
 				.sType                   = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
 				.queueCreateInfoCount    = 1,
 				.pQueueCreateInfos       = &(VkDeviceQueueCreateInfo){
@@ -366,15 +361,13 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 				},
 				.enabledExtensionCount   = 1,
 				.ppEnabledExtensionNames = (const char*[]){ VK_KHR_SWAPCHAIN_EXTENSION_NAME },
-				.pEnabledFeatures        = &physicalDeviceFeatures
-			};
-
-			physicalDeviceFeatures.textureCompressionBC = availablePhysicalDeviceFeatures.textureCompressionBC;
-			physicalDeviceFeatures.depthClamp           = availablePhysicalDeviceFeatures.depthClamp;
-			physicalDeviceFeatures.shaderClipDistance   = availablePhysicalDeviceFeatures.shaderClipDistance;
-			physicalDeviceFeatures.samplerAnisotropy    = availablePhysicalDeviceFeatures.samplerAnisotropy;
-
-			vkCreateDevice(physicalDevice, &deviceCreateInfo, NULL, &device);
+				.pEnabledFeatures        = &(VkPhysicalDeviceFeatures){
+					.textureCompressionBC = physicalDeviceFeatures.textureCompressionBC,
+					.depthClamp           = physicalDeviceFeatures.depthClamp,
+					.shaderClipDistance   = physicalDeviceFeatures.shaderClipDistance,
+					.samplerAnisotropy    = physicalDeviceFeatures.samplerAnisotropy
+				}
+			}, NULL, &device);
 
 			#define F(fn) fn = (PFN_##fn)vkGetDeviceProcAddr(device, #fn);
 			DEVICE_FUNCS(F)
@@ -863,9 +856,9 @@ static inline void drawScene(Vec3 cameraPosition, Vec3 xAxis, Vec3 yAxis, Vec3 z
 			if (i == skipPortal)
 				continue;
 
-			// todo: portal visibility test HERE
-			Portal* portal = &portals[i];
-			Portal* link = &portals[portal->link];
+			// todo: portal visibility test here
+			struct Portal* portal = &portals[i];
+			struct Portal* link = &portals[portal->link];
 
 			Mat4 portalMVP = viewProjection * mat4FromRotationTranslationScale(portal->rotation, portal->translation, portal->scale);
 
@@ -908,7 +901,6 @@ static inline void drawScene(Vec3 cameraPosition, Vec3 xAxis, Vec3 yAxis, Vec3 z
 	mvps[instanceIndex] = viewProjection * models[2];
 	materials[instanceIndex] = (Material){ 167, 127, 17, 255 };
 	vkCmdDraw(commandBuffer, 3, 1, 0, instanceIndex++);
-
 
 	vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Mat4), &viewProjection);
 	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_PARTICLE]);
@@ -962,7 +954,7 @@ void WinMainCRTStartup(void) {
 	SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
 	ioctlsocket(sock, FIONBIO, &(u_long){ 1 });
 
-	bind(sock, (struct sockaddr*)&(struct sockaddr_in){
+	(void)bind(sock, (struct sockaddr*)&(struct sockaddr_in){
 		.sin_family      = AF_INET,
 		.sin_addr.s_addr = htonl(INADDR_ANY),
 		.sin_port        = htons(9000)
@@ -1028,8 +1020,8 @@ void WinMainCRTStartup(void) {
 		quadIndices[i + 5] = (4 * (i / 6)) + 3;
 	}
 
-	for (uint32_t i = 0; i < sizeof(buffers) / sizeof(Buffer); i++) {
-		Buffer* b = (Buffer*)((char*)&buffers + (i * sizeof(Buffer)));
+	for (uint32_t i = 0; i < sizeof(buffers) / sizeof(struct Buffer); i++) {
+		struct Buffer* b = (struct Buffer*)((char*)&buffers + (i * sizeof(struct Buffer)));
 		vkCreateBuffer(device, &(VkBufferCreateInfo){
 			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
 			.size  = b->size,
@@ -1099,11 +1091,12 @@ void WinMainCRTStartup(void) {
 		}
 	}, NULL, &pipelineLayout);
 
+	VkShaderModule shaderModule;
 	vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
 		.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-		.pCode    = blit_vert,
-		.codeSize = sizeof(blit_vert)
-	}, NULL, &blitVert);
+		.pCode    = (uint32_t*)&incbin_shaders_spv_start,
+		.codeSize = (char*)&incbin_shaders_spv_end - (char*)&incbin_shaders_spv_start
+	}, NULL, &shaderModule);
 	vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
 		.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
 		.pCode    = blit_frag,
@@ -1146,11 +1139,6 @@ void WinMainCRTStartup(void) {
 	}, NULL, &portalVert);
 	vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
 		.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-		.pCode    = portal_frag,
-		.codeSize = sizeof(portal_frag)
-	}, NULL, &portalFrag);
-	vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
-		.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
 		.pCode    = voxel_vert,
 		.codeSize = sizeof(voxel_vert)
 	}, NULL, &voxelVert);
@@ -1159,8 +1147,8 @@ void WinMainCRTStartup(void) {
 		{
 			.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 			.stage  = VK_SHADER_STAGE_VERTEX_BIT,
-			.module = blitVert,
-			.pName  = "main"
+			.module = shaderModule,
+			.pName  = "blit_vert"
 		}, {
 			.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 			.stage  = VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -1216,8 +1204,8 @@ void WinMainCRTStartup(void) {
 		}, {
 			.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 			.stage  = VK_SHADER_STAGE_FRAGMENT_BIT,
-			.module = portalFrag,
-			.pName  = "main"
+			.module = shaderModule,
+			.pName  = "portal_frag"
 		}
 	};
 	VkPipelineShaderStageCreateInfo shaderStagesVoxel[] = {
@@ -1688,6 +1676,12 @@ void WinMainCRTStartup(void) {
 
 			player.translation += 0.09f * forwardMovement;
 			player.translation += 0.09f * sidewaysMovement;
+
+			for (uint32_t i = 0; i < ARRAY_COUNT(portals); i++) {
+				// todo: portal travel
+				// Portal* portal = &portals[i];
+				// Portal* link = &portals[portal->link];
+			}
 
 			ticksElapsed++;
 		}

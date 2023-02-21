@@ -9,7 +9,7 @@
 #pragma comment(lib, "vcruntime.lib")
 #pragma comment(lib, "ucrt.lib")
 
-void mainCRTStartup(void) {
+void WinMainCRTStartup(void) {
 	// cgltf_options options = { 0 };
 	// cgltf_data* data;
 
@@ -19,9 +19,9 @@ void mainCRTStartup(void) {
 	// loop over meshes only
 
 	FILE* f;
-	fopen_s(&f, "assets.h", "w");
+	fopen_s(&f, "../src/assets.h", "w");
 
-	fprintf(f, "#include \"../math.h\"\n\
+	fprintf(f, "#include \"math.h\"\n\
 \n\
 typedef struct KTX2 {\n\
 	char identifier[12];\n\

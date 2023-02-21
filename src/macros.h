@@ -24,6 +24,32 @@
 
 #define ALIGN_FORWARD(value, alignment) ((alignment) > 0) ? ((value) + (alignment) - 1) & ~((alignment) - 1) : (value)
 
+#define STR2(x) #x
+#define STR(x) STR2(x)
+
+#ifdef _WIN32
+#define INCBIN_SECTION ".rdata, \"dr\""
+#else
+#define INCBIN_SECTION ".rodata"
+#endif
+
+// this aligns start address to 16 and terminates byte array with explict 0
+// which is not really needed, feel free to change it to whatever you want/need
+#define INCBIN(name, file) \
+    __asm__(".section " INCBIN_SECTION "\n" \
+            ".global incbin_" STR(name) "_start\n" \
+            ".balign 16\n" \
+            "incbin_" STR(name) "_start:\n" \
+            ".incbin \"" file "\"\n" \
+            \
+            ".global incbin_" STR(name) "_end\n" \
+            ".balign 1\n" \
+            "incbin_" STR(name) "_end:\n" \
+            ".byte 0\n" \
+    ); \
+    extern __attribute__((aligned(16))) const char incbin_ ## name ## _start[]; \
+    extern                              const char incbin_ ## name ## _end[]
+
 #define GROUP_COUNT(threadCount, localSize) ({ \
 	__auto_type _threadCount = (threadCount);      \
 	__auto_type _localSize   = (localSize);        \
@@ -43,24 +69,16 @@
 	F(vkEnumeratePhysicalDevices)                 \
 	F(vkGetDeviceProcAddr)                        \
 	F(vkGetPhysicalDeviceFeatures)                \
-	F(vkGetPhysicalDeviceFeatures2)               \
-	F(vkGetPhysicalDeviceFeatures2KHR)            \
 	F(vkGetPhysicalDeviceFormatProperties)        \
 	F(vkGetPhysicalDeviceMemoryProperties)        \
 	F(vkGetPhysicalDeviceProperties)              \
-	F(vkGetPhysicalDeviceProperties2)             \
-	F(vkGetPhysicalDeviceProperties2KHR)          \
 	F(vkGetPhysicalDeviceQueueFamilyProperties)   \
 	F(vkGetPhysicalDeviceSurfaceCapabilitiesKHR)  \
-	F(vkGetPhysicalDeviceSurfaceCapabilities2KHR) \
 	F(vkGetPhysicalDeviceSurfaceFormatsKHR)       \
-	F(vkGetPhysicalDeviceSurfaceSupportKHR)       \
-	F(vkGetPhysicalDeviceFeatures2KHR)            \
-	F(vkGetPhysicalDeviceFeatures2KHR)
+	F(vkGetPhysicalDeviceSurfaceSupportKHR)
 
 #define DEVICE_FUNCS(f)                    \
 	F(vkAcquireNextImageKHR)               \
-	F(vkAcquireFullScreenExclusiveModeEXT) \
 	F(vkAllocateCommandBuffers)            \
 	F(vkAllocateDescriptorSets)            \
 	F(vkAllocateMemory)                    \
@@ -81,12 +99,8 @@
 	F(vkCmdEndRenderPass)                  \
 	F(vkCmdPipelineBarrier)                \
 	F(vkCmdPushConstants)                  \
-	F(vkCmdSetDepthWriteEnable)            \
-	F(vkCmdSetDepthWriteEnableEXT)         \
 	F(vkCmdSetScissor)                     \
 	F(vkCmdSetStencilReference)            \
-	F(vkCmdSetStencilTestEnable)           \
-	F(vkCmdSetStencilTestEnableEXT)        \
 	F(vkCmdSetViewport)                    \
 	F(vkCreateBuffer)                      \
 	F(vkCreateCommandPool)                 \
@@ -116,18 +130,13 @@
 	F(vkFlushMappedMemoryRanges)           \
 	F(vkFreeMemory)                        \
 	F(vkGetBufferMemoryRequirements)       \
-	F(vkGetBufferMemoryRequirements2)      \
-	F(vkGetBufferMemoryRequirements2KHR)   \
 	F(vkGetDeviceQueue)                    \
 	F(vkGetImageMemoryRequirements)        \
-	F(vkGetImageMemoryRequirements2)       \
-	F(vkGetImageMemoryRequirements2KHR)    \
 	F(vkGetSwapchainImagesKHR)             \
 	F(vkMapMemory)                         \
 	F(vkQueuePresentKHR)                   \
 	F(vkQueueSubmit)                       \
 	F(vkQueueWaitIdle)                     \
-	F(vkReleaseFullScreenExclusiveModeEXT) \
 	F(vkResetCommandPool)                  \
 	F(vkResetFences)                       \
 	F(vkUpdateDescriptorSets)              \
