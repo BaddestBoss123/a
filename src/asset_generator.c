@@ -19,7 +19,7 @@ void WinMainCRTStartup(void) {
 	// loop over meshes only
 
 	FILE* f;
-	fopen_s(&f, "../src/assets.h", "w");
+	fopen_s(&f, "assets.h", "w");
 
 	fprintf(f, "#include \"math.h\"\n\
 \n\

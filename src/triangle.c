@@ -30,15 +30,15 @@
 #include "macros.h"
 #include "assets.h"
 
-#include "shaders/blit.frag.h"
-#include "shaders/triangle.vert.h"
-#include "shaders/triangle.frag.h"
-#include "shaders/skybox.vert.h"
-#include "shaders/skybox.frag.h"
-#include "shaders/particle.vert.h"
-#include "shaders/particle.frag.h"
-#include "shaders/portal.vert.h"
-#include "shaders/voxel.vert.h"
+#include "blit.frag.h"
+#include "triangle.vert.h"
+#include "triangle.frag.h"
+#include "skybox.vert.h"
+#include "skybox.frag.h"
+#include "particle.vert.h"
+#include "particle.frag.h"
+#include "portal.vert.h"
+#include "voxel.vert.h"
 
 INCBIN(shaders_spv, "shaders.spv");
 
@@ -101,14 +101,6 @@ struct Portal {
 	Vec3 scale;
 	uint32_t link;
 };
-
-// typedef struct Scene {
-// 	Entity* root;
-// 	Portal* portals;
-// 	Mat4* modelMatrices;
-// 	uint32_t drawCount;
-// 	GraphicsPipeline skybox;
-// } Scene;
 
 typedef uint8_t VoxelChunk[16][16][16];
 
@@ -874,6 +866,8 @@ static inline void drawScene(Vec3 cameraPosition, Vec3 xAxis, Vec3 yAxis, Vec3 z
 			vkCmdDraw(commandBuffer, 6, 1, 0, 0);
 
 			// todo: calculate clipping plane
+			Vec3 normal = vec3TransformQuat((Vec3){ 0.f, 0.f, 1.f }, portal->rotation);
+			__debugbreak();
 			// Vec4 clippingPlane = { 0, 0, 0, 0 };
 			// vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Vec4), &clippingPlane);
 			drawScene(portalCameraPosition, x, y, z, recursionDepth + 1, portal->link);
