@@ -93,9 +93,9 @@ struct Transform {
 
 struct Entity {
 	struct Transform;
-	struct Mesh* mesh;
 	struct Entity** children;
 	uint32_t childCount;
+	enum MeshID mesh;
 };
 
 struct Portal {
@@ -871,11 +871,11 @@ static inline void drawScene(Vec3 cameraPosition, Vec3 xAxis, Vec3 yAxis, Vec3 z
 			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_PORTAL_STENCIL]);
 			vkCmdDraw(commandBuffer, 6, 1, 0, 0);
 
-			Vec3 normal = vec3Normalize(vec3TransformQuat((Vec3){ 0.f, 0.f, 1.f }, link->rotation));
+			Vec3 normal = vec3TransformQuat((Vec3){ 0.f, 0.f, 1.f }, link->rotation);
 			float distance = -vec3Dot(link->translation, normal);
 			Vec4 newClippingPlane = { normal.x, normal.y, normal.z, distance };
 
-			Vec3 normalA = vec3Normalize(vec3TransformQuat((Vec3){ 0.f, 0.f, 1.f }, portal->rotation));
+			Vec3 normalA = vec3TransformQuat((Vec3){ 0.f, 0.f, 1.f }, portal->rotation);
 			if (vec3Dot(normalA, cameraPosition) > vec3Dot(portal->translation, normalA))
 				newClippingPlane *= -1.f;
 
