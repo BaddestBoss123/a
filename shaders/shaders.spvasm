@@ -1,0 +1,81 @@
+OpCapability Shader
+%glsl = OpExtInstImport "GLSL.std.450"
+OpMemoryModel Logical Simple
+
+OpEntryPoint Vertex %blit_vert "blit_vert" %gl_VertexIndex %vTexCoord %_
+; OpEntryPoint Vertex %portal_vert "portal_vert" %gl_VertexIndex
+OpEntryPoint Fragment %portal_frag "portal_frag"
+OpExecutionMode %portal_frag OriginUpperLeft
+
+OpDecorate %gl_VertexIndex BuiltIn VertexIndex
+OpDecorate %vTexCoord Location 0
+
+OpMemberDecorate %gl_PerVertex 0 BuiltIn Position
+; OpMemberDecorate %gl_PerVertex 1 BuiltIn PointSize
+; OpMemberDecorate %gl_PerVertex 2 BuiltIn ClipDistance
+; OpMemberDecorate %gl_PerVertex 3 BuiltIn CullDistance
+OpDecorate %gl_PerVertex Block
+
+%Void = OpTypeVoid
+%FnVoid = OpTypeFunction %Void
+
+%F32 = OpTypeFloat 32
+%U32 = OpTypeInt 32 0
+%I32 = OpTypeInt 32 1
+%Vec2 = OpTypeVector %F32 2
+%Vec4 = OpTypeVector %F32 4
+
+%I32_0 = OpConstant %I32 0
+%I32_1 = OpConstant %I32 1
+%I32_2 = OpConstant %I32 2
+%F32_n1 = OpConstant %F32 -1
+%F32_0 = OpConstant %F32 0
+%F32_1 = OpConstant %F32 1
+%F32_2 = OpConstant %F32 2
+
+%43 = OpConstantComposite %Vec2 %F32_1 %F32_1
+
+%ArrF32_1 = OpTypeArray %F32 %I32_1
+
+%gl_PerVertex = OpTypeStruct %Vec4
+
+%PtrInputI32 = OpTypePointer Input %I32
+%PtrOutputgl_PerVertex = OpTypePointer Output %gl_PerVertex
+%PtrOutputF32 = OpTypePointer Output %F32
+%PtrOutputVec2 = OpTypePointer Output %Vec2
+%PtrOutputVec4 = OpTypePointer Output %Vec4
+
+%_ = OpVariable %PtrOutputgl_PerVertex Output
+%vTexCoord = OpVariable %PtrOutputVec2 Output
+%gl_VertexIndex = OpVariable %PtrInputI32 Input
+
+%blit_vert = OpFunction %Void None %FnVoid
+	%5 = OpLabel
+	%13 = OpLoad %I32 %gl_VertexIndex
+	%15 = OpShiftLeftLogical %I32 %13 %I32_1
+	%17 = OpBitwiseAnd %I32 %15 %I32_2
+	%18 = OpConvertSToF %F32 %17
+	%20 = OpBitwiseAnd %I32 %13 %I32_2
+	%21 = OpConvertSToF %F32 %20
+	%22 = OpCompositeConstruct %Vec2 %18 %21
+		OpStore %vTexCoord %22
+	%31 = OpLoad %Vec2 %vTexCoord
+	%33 = OpVectorTimesScalar %Vec2 %31 %F32_2
+	%36 = OpFSub %Vec2 %33 %43
+	%38 = OpCompositeExtract %F32 %36 0
+ 	%39 = OpCompositeExtract %F32 %36 1
+	%40 = OpCompositeConstruct %Vec4 %38 %39 %F32_0 %F32_1
+	%42 = OpAccessChain %PtrOutputVec4 %_ %I32_0
+		OpStore %42 %40
+	OpReturn
+OpFunctionEnd
+
+; %portal_vert = OpFunction %Void None %FnVoid
+;   %100 = OpLabel
+; 	OpReturn
+; OpFunctionEnd
+
+%portal_frag = OpFunction %Void None %FnVoid
+	%509 = OpLabel
+	OpReturn
+OpFunctionEnd

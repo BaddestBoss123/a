@@ -10,11 +10,11 @@
 #pragma comment(lib, "ucrt.lib")
 
 void WinMainCRTStartup(void) {
-	// cgltf_options options = { 0 };
-	// cgltf_data* data;
+	cgltf_options options = { 0 };
+	cgltf_data* data;
 
-	// cgltf_parse_file(&options, "", &data);
-	// cgltf_load_buffers(&options, data, "");
+	cgltf_parse_file(&options, "assets/treePineSmall.glb", &data);
+	cgltf_load_buffers(&options, data, "assets");
 
 	// loop over meshes only
 
@@ -71,30 +71,33 @@ typedef struct Primitive {\n\
 } Primitive;\n\
 \n\
 typedef struct Mesh {\n\
-	Primitive* primitives;\n\
-	float* weights;\n\
 	uint32_t primitiveCount;\n\
 	uint32_t weightsCount;\n\
+	Primitive* primitives;\n\
+	float* weights;\n\
 } Mesh;\n");
 
+	for (cgltf_size i = 0; i < data->meshes_count; i++) {
+		cgltf_mesh mesh = data->meshes[i];
 
-// 	for (cgltf_size i = 0; i < data->meshes_count; i++) {
+		fprintf(f,
+"\nstatic Mesh mesh_%s = {\n\
+	.primitiveCount = %llu,\n\
+	.primitives     = (Primitive[]){\n\t\t", "treePineSmall", mesh.primitives_count);// data->meshes[i].name);
 
+		for (cgltf_size j = 0; j < data->meshes[i].primitives_count; j++) {
+			cgltf_primitive primitive = mesh.primitives[j];
 
-// 		fprintf(f,
-// "static const Mesh mesh_%s = {\n\
-// 	.primitives     = (const Primitive[]){\n", data->meshes[i].name);
+			fprintf(f, "{\n\
+			.indexCount = %zu,\n\
+		}, ", primitive.indices->count);
 
-// 		for (cgltf_size j = 0; j < data->meshes[i].primitives_count; j++) {
+		}
 
-// 		}
+		fseek(f, -2, SEEK_CUR);
+		fprintf(f, "\n\t}\n};\n");
 
-// 		fprintf(f,
-// "	},\n\
-// 	.primitiveCount = %llu,\n\
-// };\n\n", data->meshes[i].primitives_count);
-
-// 	}
+	}
 
 	ExitProcess(0);
 }

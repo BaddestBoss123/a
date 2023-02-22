@@ -823,7 +823,7 @@ static inline uint32_t generateChunk(VoxelChunk* chunk, uint32_t* faces) {
 	return faceCount;
 }
 
-static inline void drawScene(Vec3 cameraPosition, Vec3 xAxis, Vec3 yAxis, Vec3 zAxis, uint32_t recursionDepth, int32_t skipPortal) {
+static inline void drawScene(Vec3 cameraPosition, Vec3 xAxis, Vec3 yAxis, Vec3 zAxis, Vec4 clippingPlane, uint32_t recursionDepth, int32_t skipPortal) {
 	Mat4 viewMatrix;
 	viewMatrix[0][0] = xAxis.x;
 	viewMatrix[1][0] = yAxis.x;
@@ -860,17 +860,21 @@ static inline void drawScene(Vec3 cameraPosition, Vec3 xAxis, Vec3 yAxis, Vec3 z
 			Vec3 y = vec3TransformQuat(yAxis, q);
 			Vec3 z = vec3TransformQuat(zAxis, q);
 
+			vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Mat4), &portalMVP);
+
 			vkCmdSetStencilReference(commandBuffer, VK_STENCIL_FACE_FRONT_AND_BACK, recursionDepth);
 			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_PORTAL_STENCIL]);
-			vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Mat4), &portalMVP);
 			vkCmdDraw(commandBuffer, 6, 1, 0, 0);
 
-			// todo: calculate clipping plane
-			Vec3 normal = vec3TransformQuat((Vec3){ 0.f, 0.f, 1.f }, portal->rotation);
-			__debugbreak();
-			// Vec4 clippingPlane = { 0, 0, 0, 0 };
-			// vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Vec4), &clippingPlane);
-			drawScene(portalCameraPosition, x, y, z, recursionDepth + 1, portal->link);
+			Vec3 normal = vec3Normalize(vec3TransformQuat((Vec3){ 0.f, 0.f, 1.f }, link->rotation));
+			float distance = -vec3Dot(link->translation, normal);
+			Vec4 newClippingPlane = { normal.x, normal.y, normal.z, distance };
+
+			Vec3 normalA = vec3Normalize(vec3TransformQuat((Vec3){ 0.f, 0.f, 1.f }, portal->rotation));
+			if (vec3Dot(normalA, cameraPosition) > vec3Dot(portal->translation, normalA))
+				newClippingPlane *= -1.f;
+
+			drawScene(portalCameraPosition, x, y, z, newClippingPlane, recursionDepth + 1, portal->link);
 
 			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_PORTAL_DEPTH]);
 			vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Mat4), &portalMVP);
@@ -879,13 +883,21 @@ static inline void drawScene(Vec3 cameraPosition, Vec3 xAxis, Vec3 yAxis, Vec3 z
 	}
 
 	vkCmdSetStencilReference(commandBuffer, VK_STENCIL_FACE_FRONT_AND_BACK, recursionDepth);
-
 	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_VOXEL]);
 	vkCmdBindIndexBuffer(commandBuffer, buffers.index.buffer, BUFFER_OFFSET_INDEX_QUADS, VK_INDEX_TYPE_UINT16);
 
-	// todo: loop over generated model matrices/aabbs and do culling
+	struct Test {
+		Mat4 viewProjection;
+		Vec4 clippingPlane;
+	} test = {
+		.viewProjection = viewProjection,
+		.clippingPlane = clippingPlane
+	};
+	vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(test), &test);
+
+	// todo: culling
 	for (uint32_t i = 0; i < 2; i++) {
-		mvps[instanceIndex] = viewProjection * models[i];
+		mvps[instanceIndex] = models[i]; // viewProjection * models[i];
 		materials[instanceIndex] = (Material){ 127 + i * 50, 127, 127 - i * 50, 255 }; // materials[i];
 		vkCmdDrawIndexed(commandBuffer, 36, 1, 0, 0, instanceIndex++);
 	}
@@ -1081,7 +1093,7 @@ void WinMainCRTStartup(void) {
 		.pPushConstantRanges    = &(VkPushConstantRange){
 			.stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
 			.offset     = 0,
-			.size       = sizeof(Mat4)
+			.size       = sizeof(Mat4) + sizeof(Vec4)
 		}
 	}, NULL, &pipelineLayout);
 
@@ -1348,9 +1360,15 @@ void WinMainCRTStartup(void) {
 		.viewportCount = 1,
 		.scissorCount  = 1
 	};
-	VkPipelineRasterizationStateCreateInfo rasterizationState = {
+	VkPipelineRasterizationStateCreateInfo rasterizationStateNone = {
 		.sType     = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
 		.lineWidth = 1.f
+	};
+	VkPipelineRasterizationStateCreateInfo rasterizationState = {
+		.sType     = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+		.lineWidth = 1.f,
+		.cullMode  = VK_CULL_MODE_BACK_BIT,
+		.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE
 	};
 	VkPipelineRasterizationStateCreateInfo rasterizationStatePortal = {
 		.sType            = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
@@ -1511,7 +1529,7 @@ void WinMainCRTStartup(void) {
 			.pVertexInputState   = &vertexInputStateNone,
 			.pInputAssemblyState = &inputAssemblyState,
 			.pViewportState      = &viewportState,
-			.pRasterizationState = &rasterizationState,
+			.pRasterizationState = &rasterizationStateNone,
 			.pMultisampleState   = &multisampleState,
 			.pDepthStencilState  = &depthStencilStateNone,
 			.pColorBlendState    = &colorBlendState,
@@ -1539,7 +1557,7 @@ void WinMainCRTStartup(void) {
 			.pVertexInputState   = &vertexInputStateNone,
 			.pInputAssemblyState = &inputAssemblyState,
 			.pViewportState      = &viewportState,
-			.pRasterizationState = &rasterizationState,
+			.pRasterizationState = &rasterizationStateNone,
 			.pMultisampleState   = &multisampleState,
 			.pDepthStencilState  = &depthStencilStateSkybox,
 			.pColorBlendState    = &colorBlendState,
@@ -1553,7 +1571,7 @@ void WinMainCRTStartup(void) {
 			.pVertexInputState   = &vertexInputStateParticle,
 			.pInputAssemblyState = &inputAssemblyStateParticle,
 			.pViewportState      = &viewportState,
-			.pRasterizationState = &rasterizationState,
+			.pRasterizationState = &rasterizationStateNone,
 			.pMultisampleState   = &multisampleState,
 			.pDepthStencilState  = &depthStencilStateTriangle,
 			.pColorBlendState    = &colorBlendState,
@@ -1668,8 +1686,8 @@ void WinMainCRTStartup(void) {
 			Vec3 forwardMovement  = { forward * -sy, 0, forward * -cy };
 			Vec3 sidewaysMovement = { strafe * cy, 0, strafe * -sy };
 
-			player.translation += 0.09f * forwardMovement;
-			player.translation += 0.09f * sidewaysMovement;
+			player.translation += 0.2f * forwardMovement;
+			player.translation += 0.2f * sidewaysMovement;
 
 			for (uint32_t i = 0; i < ARRAY_COUNT(portals); i++) {
 				// todo: portal travel
@@ -1730,7 +1748,7 @@ void WinMainCRTStartup(void) {
 			.pClearValues    = (VkClearValue[]){ { 0 }, { 0 } }
 		}, VK_SUBPASS_CONTENTS_INLINE);
 
-		drawScene(cameraPosition, xAxis, yAxis, zAxis, 0, -1);
+		drawScene(cameraPosition, xAxis, yAxis, zAxis, (Vec4){ 0.f, 0.f, 0.f, 0.f }, 0, -1);
 
 		vkCmdEndRenderPass(commandBuffer);
 

@@ -48,8 +48,19 @@ typedef struct Primitive {
 } Primitive;
 
 typedef struct Mesh {
-	Primitive* primitives;
-	float* weights;
 	uint32_t primitiveCount;
 	uint32_t weightsCount;
+	Primitive* primitives;
+	float* weights;
 } Mesh;
+
+static Mesh mesh_treePineSmall = {
+	.primitiveCount = 2,
+	.primitives     = (Primitive[]){
+		{
+			.indexCount = 870,
+		}, {
+			.indexCount = 54,
+		}
+	}
+};
