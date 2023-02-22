@@ -13,8 +13,8 @@ void WinMainCRTStartup(void) {
 	cgltf_options options = { 0 };
 	cgltf_data* data;
 
-	cgltf_parse_file(&options, "assets/treePineSmall.glb", &data);
-	cgltf_load_buffers(&options, data, "assets");
+	cgltf_parse_file(&options, "../assets/treePineSmall.glb", &data);
+	cgltf_load_buffers(&options, data, "../assets");
 
 	// loop over meshes only
 
@@ -23,7 +23,7 @@ void WinMainCRTStartup(void) {
 
 	fprintf(f, "#include \"math.h\"\n\
 \n\
-typedef struct KTX2 {\n\
+struct KTX2 {\n\
 	char identifier[12];\n\
 	uint32_t vkFormat;\n\
 	uint32_t typeSize;\n\
@@ -45,45 +45,45 @@ typedef struct KTX2 {\n\
 		uint64_t byteLength;\n\
 		uint64_t uncompressedByteLength;\n\
 	} levels[];\n\
-} KTX2;\n\
+};\n\
 \n\
-typedef struct VertexPosition {\n\
+struct VertexPosition {\n\
 	uint16_t x, y, z;\n\
-} VertexPosition;\n\
+};\n\
 \n\
-typedef struct VertexAttributes {\n\
+struct VertexAttributes {\n\
 	float nx, ny, nz;\n\
 	float tx, ty, tz, tw;\n\
 	float u, v;\n\
-} VertexAttributes;\n\
+};\n\
 \n\
-typedef struct Material {\n\
+struct Material {\n\
 	uint8_t r, g, b, a;\n\
-} Material;\n\
+};\n\
 \n\
-typedef struct Primitive {\n\
+struct Primitive {\n\
 	uint32_t material;\n\
 	uint32_t indexCount;\n\
 	uint32_t firstIndex;\n\
 	uint32_t vertexOffset;\n\
 	Vec3 min;\n\
 	Vec3 max;\n\
-} Primitive;\n\
+};\n\
 \n\
-typedef struct Mesh {\n\
+struct Mesh {\n\
 	uint32_t primitiveCount;\n\
 	uint32_t weightsCount;\n\
-	Primitive* primitives;\n\
+	struct Primitive* primitives;\n\
 	float* weights;\n\
-} Mesh;\n");
+};\n");
 
 	for (cgltf_size i = 0; i < data->meshes_count; i++) {
 		cgltf_mesh mesh = data->meshes[i];
 
 		fprintf(f,
-"\nstatic Mesh mesh_%s = {\n\
+"\nstatic struct Mesh mesh_%s = {\n\
 	.primitiveCount = %llu,\n\
-	.primitives     = (Primitive[]){\n\t\t", "treePineSmall", mesh.primitives_count);// data->meshes[i].name);
+	.primitives     = (struct Primitive[]){\n\t\t", "treePineSmall", mesh.primitives_count);// data->meshes[i].name);
 
 		for (cgltf_size j = 0; j < data->meshes[i].primitives_count; j++) {
 			cgltf_primitive primitive = mesh.primitives[j];

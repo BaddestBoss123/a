@@ -1,0 +1,1 @@
+download clang and vulkan SDK, then run build.cmd

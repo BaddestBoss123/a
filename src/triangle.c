@@ -85,20 +85,21 @@ struct Buffer {
 	VkMemoryPropertyFlags optionalMemoryPropertyFlagBits;
 };
 
-struct Entity {
+struct Transform {
 	Vec3 translation;
 	Quat rotation;
 	Vec3 scale;
+};
 
-	Mesh* mesh;
+struct Entity {
+	struct Transform;
+	struct Mesh* mesh;
 	struct Entity** children;
 	uint32_t childCount;
 };
 
 struct Portal {
-	Vec3 translation;
-	Quat rotation;
-	Vec3 scale;
+	struct Transform;
 	uint32_t link;
 };
 
@@ -118,7 +119,7 @@ enum BufferRanges {
 	BUFFER_RANGE_VERTEX_POSITIONS   = ALIGN_FORWARD(sizeof(vertexPositions), 256),
 	BUFFER_RANGE_PARTICLES          = ALIGN_FORWARD(MAX_PARTICLES, 256),
 	BUFFER_RANGE_INSTANCE_MVPS      = ALIGN_FORWARD(MAX_INSTANCES * sizeof(Mat4), 256),
-	BUFFER_RANGE_INSTANCE_MATERIALS = ALIGN_FORWARD(MAX_INSTANCES * sizeof(Material), 256)
+	BUFFER_RANGE_INSTANCE_MATERIALS = ALIGN_FORWARD(MAX_INSTANCES * sizeof(struct Material), 256)
 };
 
 enum BufferOffsets {
@@ -245,11 +246,15 @@ static struct Portal portals[] = {
 // 	.skybox = GRAPHICS_PIPELINE_SKYBOX
 // };
 
+static struct Entity tree = {
+	.translation = { -20.f, 2.f, 5.f },
+};
+
 static VkCommandBuffer commandBuffer;
 static uint32_t instanceIndex;
 static Mat4 models[MAX_INSTANCES];
 static Mat4* mvps;
-static Material* materials;
+static struct Material* materials;
 
 static uint32_t getMemoryTypeIndex(VkMemoryPropertyFlags requiredFlags, VkMemoryPropertyFlags optionalFlags) {
 	for (uint32_t i = 0; i < physicalDeviceMemoryProperties.memoryTypeCount; i++) {
@@ -898,14 +903,14 @@ static inline void drawScene(Vec3 cameraPosition, Vec3 xAxis, Vec3 yAxis, Vec3 z
 	// todo: culling
 	for (uint32_t i = 0; i < 2; i++) {
 		mvps[instanceIndex] = models[i]; // viewProjection * models[i];
-		materials[instanceIndex] = (Material){ 127 + i * 50, 127, 127 - i * 50, 255 }; // materials[i];
+		materials[instanceIndex] = (struct Material){ 127 + i * 50, 127, 127 - i * 50, 255 }; // materials[i];
 		vkCmdDrawIndexed(commandBuffer, 36, 1, 0, 0, instanceIndex++);
 	}
 
 	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_TRIANGLE]);
 	vkCmdBindIndexBuffer(commandBuffer, buffers.index.buffer, BUFFER_OFFSET_INDEX_VERTICES, VK_INDEX_TYPE_UINT16);
 	mvps[instanceIndex] = viewProjection * models[2];
-	materials[instanceIndex] = (Material){ 167, 127, 17, 255 };
+	materials[instanceIndex] = (struct Material){ 167, 127, 17, 255 };
 	vkCmdDraw(commandBuffer, 3, 1, 0, instanceIndex++);
 
 	vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Mat4), &viewProjection);
@@ -1244,7 +1249,7 @@ void WinMainCRTStartup(void) {
 				.inputRate = VK_VERTEX_INPUT_RATE_INSTANCE
 			}, {
 				.binding   = 3,
-				.stride    = sizeof(Material),
+				.stride    = sizeof(struct Material),
 				.inputRate = VK_VERTEX_INPUT_RATE_INSTANCE
 			}
 		},
@@ -1293,7 +1298,7 @@ void WinMainCRTStartup(void) {
 				.inputRate = VK_VERTEX_INPUT_RATE_INSTANCE
 			}, {
 				.binding   = 3,
-				.stride    = sizeof(Material),
+				.stride    = sizeof(struct Material),
 				.inputRate = VK_VERTEX_INPUT_RATE_INSTANCE
 			}
 		},
