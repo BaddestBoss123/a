@@ -210,12 +210,12 @@ static struct Camera camera = {
 
 static struct Portal portals[] = {
 	{
-		.translation = { 0.f, 3.f, 0.f },
+		.translation = { 1.f, 3.f, 0.f },
 		.rotation    = { 0, 0, 0, 1 },
 		.scale       = { 1, 1, 1 },
 		.link        = 1
 	}, {
-		.translation = { 0.f, 13.f, 0.f },
+		.translation = { -1.f, 6.f, 0.f },
 		.rotation    = { 0, 0, 0, 1 },
 		.scale       = { 1, 1, 1 },
 		.link        = 0
@@ -940,9 +940,6 @@ extern void abc(void);
 
 void WinMainCRTStartup(void) {
 	abc();
-
-	portals[0].rotation = quatRotateY(portals[0].rotation, 0.3);
-	portals[1].rotation = quatRotateY(portals[1].rotation, 0.6);
 
 	LARGE_INTEGER performanceFrequency;
 	QueryPerformanceFrequency(&performanceFrequency);
@@ -1735,6 +1732,9 @@ void WinMainCRTStartup(void) {
 
 			ticksElapsed++;
 		}
+
+		portals[0].rotation = quatRotateY(portals[0].rotation, 0.001);
+		portals[1].rotation = quatRotateY(portals[1].rotation, -0.001);
 
 		commandBuffer = commandBuffers[frame];
 		instanceIndex = 0;
