@@ -57,7 +57,6 @@
 })
 
 #define BEFORE_INSTANCE_FUNCS(F)              \
-	F(vkEnumerateInstanceExtensionProperties) \
 	F(vkEnumerateInstanceVersion)             \
 	F(vkCreateInstance)
 
@@ -65,7 +64,6 @@
 	F(vkCreateDevice)                             \
 	F(vkCreateInstance)                           \
 	F(vkCreateWin32SurfaceKHR)                    \
-	F(vkEnumerateDeviceExtensionProperties)       \
 	F(vkEnumeratePhysicalDevices)                 \
 	F(vkGetDeviceProcAddr)                        \
 	F(vkGetPhysicalDeviceFeatures)                \
@@ -95,7 +93,6 @@
 	F(vkCmdDispatch)                       \
 	F(vkCmdDraw)                           \
 	F(vkCmdDrawIndexed)                    \
-	F(vkCmdDrawIndexedIndirect)            \
 	F(vkCmdEndRenderPass)                  \
 	F(vkCmdPipelineBarrier)                \
 	F(vkCmdPushConstants)                  \
@@ -118,16 +115,12 @@
 	F(vkCreateSemaphore)                   \
 	F(vkCreateShaderModule)                \
 	F(vkCreateSwapchainKHR)                \
-	F(vkDestroyBuffer)                     \
-	F(vkDestroyDescriptorSetLayout)        \
 	F(vkDestroyFramebuffer)                \
 	F(vkDestroyImage)                      \
 	F(vkDestroyImageView)                  \
-	F(vkDestroyShaderModule)               \
 	F(vkDestroySwapchainKHR)               \
 	F(vkDeviceWaitIdle)                    \
 	F(vkEndCommandBuffer)                  \
-	F(vkFlushMappedMemoryRanges)           \
 	F(vkFreeMemory)                        \
 	F(vkGetBufferMemoryRequirements)       \
 	F(vkGetDeviceQueue)                    \

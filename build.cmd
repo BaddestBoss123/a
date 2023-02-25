@@ -65,6 +65,10 @@ clang src/asset_generator.c -g -o build/asset_generator.exe %COMPILE_FLAGS% %LIN
 pushd build
 asset_generator.exe
 move assets.h ../src/assets.h
+move scene.h ../src/scene.h
+move indices ../indices
+move vertices ../vertices
+move attributes ../attributes
 popd
 
 rem clang src/dwrite.cpp src/triangle.c -Ofast -o build/triangle_speed.exe %COMPILE_FLAGS% %LINK_FLAGS%
