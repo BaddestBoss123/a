@@ -33,11 +33,13 @@ void WinMainCRTStartup(void) {
 	cgltf_parse_file(&options, "../assets/Sponza/glTF/Sponza.gltf", &data);
 	cgltf_load_buffers(&options, data, "../assets/Sponza/glTF/");
 
+	FILE* ktx2_cmd;
 	FILE* scene_h;
 	FILE* assets_h;
 	FILE* indexBuffer;
 	FILE* vertexBuffer;
 	FILE* attributeBuffer;
+	fopen_s(&ktx2_cmd, "ktx2.cmd", "w");
 	fopen_s(&scene_h, "scene.h", "w");
 	fopen_s(&assets_h, "assets.h", "w");
 	fopen_s(&indexBuffer, "indices", "wb");
@@ -52,8 +54,14 @@ void WinMainCRTStartup(void) {
 		uint32_t firstIndex;
 	} visitedAccessors[0x100000];
 
+	static struct {
+		bool visited;
+		uint32_t index;
+	} visitedImages[0x1000];
+
 	fprintf(assets_h, "#pragma once\n\
 \n\
+#include \"macros.h\"\n\
 #include \"math.h\"\n\
 \n\
 struct KTX2 {\n\
@@ -171,6 +179,26 @@ struct Scene {\n\
 		fprintf(assets_h, "\t%s,\n", mesh->name);
 	}
 	fseek(assets_h, -3, SEEK_CUR);
+	fprintf(assets_h, "\n};\n\n");
+
+	uint32_t imageCount = 0;
+	char* ktx2Images = calloc(0x10000, sizeof(char));
+	for (cgltf_size i = 0; i < data->materials_count; i++) {
+		cgltf_material material = data->materials[i];
+
+		uint64_t imageIndex = material.pbr_metallic_roughness.base_color_texture.texture->image - data->images;
+
+		if (!visitedImages[imageIndex].visited) {
+			visitedImages[imageIndex].visited = true;
+			visitedImages[imageIndex].index = imageCount++;
+
+			sprintf(ktx2Images, "%s\t(struct KTX2*)&incbin_image_%zi_ktx2_start,\n", ktx2Images, imageIndex);
+			fprintf(assets_h, "INCBIN(image_%zi_ktx2, \"ktx2/%zi.ktx2\");\n", imageIndex, imageIndex);
+			fprintf(ktx2_cmd, "compressonatorcli -fd BC7 -EncodeWith GPU -Quality 1.0 -mipsize 8 assets/Sponza/glTF/%s ktx2/%zi.ktx2\n", material.pbr_metallic_roughness.base_color_texture.texture->image->uri, imageIndex);
+		}
+	}
+	fprintf(assets_h, "\nstatic struct KTX2* ktx2Images[] = {\n%s", ktx2Images);
+	fseek(assets_h, -3, SEEK_CUR);
 	fprintf(assets_h, "\n};\n");
 
 	fprintf(assets_h, "\nstatic struct Mesh meshes[] = {\n\t");
@@ -232,32 +260,41 @@ struct Scene {\n\
 
 						float* positionsIn = (float*)((char*)attribute.data->buffer_view->buffer->data + attribute.data->buffer_view->offset + attribute.data->offset);
 						for (cgltf_size l = 0; l < attribute.data->count; l++) {
-
-							#define MAP(n, start1, stop1, start2, stop2) ((n - start1) / (stop1 - start1) * (stop2 - start2) + start2)
-
 							positions[l] = (struct VertexPosition){
-								.x = (uint16_t)(MAP(positionsIn[l * 3 + 0], min.x, max.x, 0.f, 1.f) * UINT16_MAX),
-								.y = (uint16_t)(MAP(positionsIn[l * 3 + 1], min.y, max.y, 0.f, 1.f) * UINT16_MAX),
-								.z = (uint16_t)(MAP(positionsIn[l * 3 + 2], min.z, max.z, 0.f, 1.f) * UINT16_MAX),
+								.x = (uint16_t)((positionsIn[l * 3 + 0] - min.x) / (max.x - min.x) * UINT16_MAX),
+								.y = (uint16_t)((positionsIn[l * 3 + 1] - min.y) / (max.y - min.y) * UINT16_MAX),
+								.z = (uint16_t)((positionsIn[l * 3 + 2] - min.z) / (max.z - min.z) * UINT16_MAX),
 							};
 						}
 
 						fwrite(positions, sizeof(struct VertexPosition), attribute.data->count, vertexBuffer);
 					} break;
 					case cgltf_attribute_type_normal: {
-						float* normalsIn = (float*)((char*)attribute.data->buffer_view->buffer->data + attribute.data->buffer_view->offset + attribute.data->offset);
+						float* attributesIn = (float*)((char*)attribute.data->buffer_view->buffer->data + attribute.data->buffer_view->offset + attribute.data->offset);
 
 						for (cgltf_size l = 0; l < attribute.data->count; l++) {
-							attributes[l].nx = normalsIn[l * 3 + 0];
-							attributes[l].ny = normalsIn[l * 3 + 1];
-							attributes[l].nz = normalsIn[l * 3 + 2];
+							attributes[l].nx = attributesIn[l * 3 + 0];
+							attributes[l].ny = attributesIn[l * 3 + 1];
+							attributes[l].nz = attributesIn[l * 3 + 2];
 						}
 					} break;
 					case cgltf_attribute_type_tangent: {
+						float* attributesIn = (float*)((char*)attribute.data->buffer_view->buffer->data + attribute.data->buffer_view->offset + attribute.data->offset);
 
+						for (cgltf_size l = 0; l < attribute.data->count; l++) {
+							attributes[l].tx = attributesIn[l * 4 + 0];
+							attributes[l].ty = attributesIn[l * 4 + 1];
+							attributes[l].tz = attributesIn[l * 4 + 2];
+							attributes[l].tw = attributesIn[l * 4 + 3];
+						}
 					} break;
 					case cgltf_attribute_type_texcoord: {
+						float* attributesIn = (float*)((char*)attribute.data->buffer_view->buffer->data + attribute.data->buffer_view->offset + attribute.data->offset);
 
+						for (cgltf_size l = 0; l < attribute.data->count; l++) {
+							attributes[l].u = attributesIn[l * 2 + 0];
+							attributes[l].v = attributesIn[l * 2 + 1];
+						}
 					} break;
 					default: {
 
