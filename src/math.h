@@ -6,53 +6,12 @@
 #include <xmmintrin.h>
 #include <immintrin.h>
 
+typedef float Mat3 __attribute__((matrix_type(3, 3)));
 typedef float Mat4 __attribute__((matrix_type(4, 4)));
 typedef float Vec2 __attribute__((ext_vector_type(2)));
 typedef float Vec3 __attribute__((ext_vector_type(3)));
 typedef float Vec4 __attribute__((ext_vector_type(4)));
 typedef float Quat __attribute__((ext_vector_type(4)));
-
-static inline Mat4 mat4FromRotation(Quat r) {
-	Mat4 ret;
-	ret[0][0] = (1.f - ((r.y * (r.y + r.y)) + (r.z * (r.z + r.z))));
-	ret[1][0] = ((r.x * (r.y + r.y)) + (r.w * (r.z + r.z)));
-	ret[2][0] = ((r.x * (r.z + r.z)) - (r.w * (r.y + r.y)));
-	ret[3][0] = 0.f;
-	ret[0][1] = ((r.x * (r.y + r.y)) - (r.w * (r.z + r.z)));
-	ret[1][1] = (1.f - ((r.x * (r.x + r.x)) + (r.z * (r.z + r.z))));
-	ret[2][1] = ((r.y * (r.z + r.z)) + (r.w * (r.x + r.x)));
-	ret[3][1] = 0.f;
-	ret[0][2] = ((r.x * (r.z + r.z)) + (r.w * (r.y + r.y)));
-	ret[1][2] = ((r.y * (r.z + r.z)) - (r.w * (r.x + r.x)));
-	ret[2][2] = (1.f - ((r.x * (r.x + r.x)) + (r.y * (r.y + r.y))));
-	ret[3][2] = 0.f;
-	ret[0][3] = 0.f;
-	ret[1][3] = 0.f;
-	ret[2][3] = 0.f;
-	ret[3][3] = 1.f;
-	return ret;
-}
-
-static inline Mat4 mat4FromTranslationScale(Vec3 t, Vec3 s) {
-	Mat4 ret;
-	ret[0][0] = s.x;
-	ret[1][0] = s.x;
-	ret[2][0] = s.x;
-	ret[3][0] = 0.f;
-	ret[0][1] = s.y;
-	ret[1][1] = s.y;
-	ret[2][1] = s.y;
-	ret[3][1] = 0.f;
-	ret[0][2] = s.z;
-	ret[1][2] = s.z;
-	ret[2][2] = s.z;
-	ret[3][2] = 0.f;
-	ret[0][3] = t.x;
-	ret[1][3] = t.y;
-	ret[2][3] = t.z;
-	ret[3][3] = 1.f;
-	return ret;
-}
 
 static inline Mat4 mat4FromRotationTranslationScale(Quat r, Vec3 t, Vec3 s) {
 	Mat4 ret;

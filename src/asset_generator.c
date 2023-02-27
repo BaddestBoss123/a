@@ -100,6 +100,7 @@ struct VertexAttributes {\n\
 \n\
 struct Material {\n\
 	uint8_t r, g, b, a;\n\
+	uint16_t colorIndex;\n\
 };\n\
 \n\
 struct Primitive {\n\
@@ -199,9 +200,28 @@ struct Scene {\n\
 	}
 	fprintf(assets_h, "\nstatic struct KTX2* ktx2Images[] = {\n%s", ktx2Images);
 	fseek(assets_h, -3, SEEK_CUR);
-	fprintf(assets_h, "\n};\n");
+	fprintf(assets_h, "\n};\n\n");
 
-	fprintf(assets_h, "\nstatic struct Mesh meshes[] = {\n\t");
+	fprintf(assets_h, "static struct Material materials[] = {\n\t");
+	for (cgltf_size i = 0; i < data->materials_count; i++) {
+		cgltf_material m = data->materials[i];
+
+		fprintf(assets_h, "{\n\
+		.r = %i,\n\
+		.g = %i,\n\
+		.b = %i,\n\
+		.a = %i,\n\
+		.colorIndex = %i,\n\
+	}, ", (uint8_t)(m.pbr_metallic_roughness.base_color_factor[0] * 255),
+		  (uint8_t)(m.pbr_metallic_roughness.base_color_factor[1] * 255),
+		  (uint8_t)(m.pbr_metallic_roughness.base_color_factor[2] * 255),
+		  (uint8_t)(m.pbr_metallic_roughness.base_color_factor[3] * 255),
+		  visitedImages[m.pbr_metallic_roughness.base_color_texture.texture->image - data->images].index);
+	}
+	fseek(assets_h, -2, SEEK_CUR);
+	fprintf(assets_h, "\n};\n\n");
+
+	fprintf(assets_h, "static struct Mesh meshes[] = {\n\t");
 	for (cgltf_size i = 0; i < data->meshes_count; i++) {
 		cgltf_mesh mesh = data->meshes[i];
 
@@ -212,7 +232,7 @@ struct Scene {\n\
 		for (cgltf_size j = 0; j < data->meshes[i].primitives_count; j++) {
 			cgltf_primitive primitive = mesh.primitives[j];
 
-			uint64_t material = 0;
+			uint64_t material = primitive.material - data->materials;
 			uint64_t indexCount = primitive.indices->count;
 			uint64_t firstIndex = 0;
 			uint64_t vertexOffset = 0;

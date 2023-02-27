@@ -2,8 +2,6 @@
 
 #define WASM_EXPORT __attribute__((visibility("default")))
 
-#define ARRAY_COUNT(array) (sizeof((array)) / sizeof((array)[0]))
-
 #define MEMBER_SIZE(type, member) sizeof(((type*)0)->member)
 
 #define BITS_SET(variable, bits) ((variable & (bits)) == (bits))
