@@ -78,6 +78,11 @@ enum GraphicsPipeline {
 	GRAPHICS_PIPELINE_MAX
 };
 
+struct Instance {
+	Mat4 mvp;
+	struct Material material;
+};
+
 struct Buffer {
 	VkBuffer buffer;
 	VkDeviceMemory deviceMemory;
@@ -94,18 +99,16 @@ enum BufferRanges {
 	BUFFER_RANGE_VERTEX_POSITIONS   = ALIGN_FORWARD(32 * 1024 * 1024, 256), //ALIGN_FORWARD(((char*)&incbin_vertices_end - (char*)&incbin_vertices_start), 256),
 	BUFFER_RANGE_VERTEX_ATTRIBUTES  = ALIGN_FORWARD(32 * 1024 * 1024, 256), //ALIGN_FORWARD(((char*)&incbin_vertices_end - (char*)&incbin_vertices_start), 256),
 	BUFFER_RANGE_PARTICLES          = ALIGN_FORWARD(MAX_PARTICLES, 256),
-	BUFFER_RANGE_INSTANCE_MVPS      = ALIGN_FORWARD(MAX_INSTANCES * sizeof(Mat4), 256),
-	BUFFER_RANGE_INSTANCE_MATERIALS = ALIGN_FORWARD(MAX_INSTANCES * sizeof(struct Material), 256)
+	BUFFER_RANGE_INSTANCES          = ALIGN_FORWARD(MAX_INSTANCES * sizeof(struct Instance), 256),
 };
 
 enum BufferOffsets {
-	BUFFER_OFFSET_INDEX_VERTICES     = 0,
-	BUFFER_OFFSET_INDEX_QUADS        = BUFFER_RANGE_INDEX_VERTICES,
-	BUFFER_OFFSET_VERTEX_POSITIONS   = 0,
-	BUFFER_OFFSET_VERTEX_ATTRIBUTES  = BUFFER_RANGE_VERTEX_POSITIONS,
-	BUFFER_OFFSET_PARTICLES          = 0,
-	BUFFER_OFFSET_INSTANCE_MVPS      = 0,
-	BUFFER_OFFSET_INSTANCE_MATERIALS = FRAMES_IN_FLIGHT * BUFFER_RANGE_INSTANCE_MVPS
+	BUFFER_OFFSET_INDEX_VERTICES    = 0,
+	BUFFER_OFFSET_INDEX_QUADS       = BUFFER_RANGE_INDEX_VERTICES,
+	BUFFER_OFFSET_VERTEX_POSITIONS  = 0,
+	BUFFER_OFFSET_VERTEX_ATTRIBUTES = BUFFER_RANGE_VERTEX_POSITIONS,
+	BUFFER_OFFSET_PARTICLES         = 0,
+	BUFFER_OFFSET_INSTANCES         = 0
 };
 
 static struct {
@@ -137,7 +140,7 @@ static struct {
 		.requiredMemoryPropertyFlagBits = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
 	},
 	.instance  = {
-		.size                           = (FRAMES_IN_FLIGHT * BUFFER_RANGE_INSTANCE_MVPS) + (FRAMES_IN_FLIGHT * BUFFER_RANGE_INSTANCE_MATERIALS),
+		.size                           = (FRAMES_IN_FLIGHT * BUFFER_RANGE_INSTANCES),
 		.usage                          = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
 		.requiredMemoryPropertyFlagBits = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 		.optionalMemoryPropertyFlagBits = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
@@ -434,26 +437,25 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 				.maxLod           = VK_LOD_CLAMP_NONE
 			}, NULL, &sampler);
 
+			VkSampler samplers[_countof(ktx2Images)];
+			for (uint32_t i = 0; i < _countof(samplers); i++)
+				samplers[i] = sampler;
+
 			vkCreateDescriptorSetLayout(device, &(VkDescriptorSetLayoutCreateInfo){
 				.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-				.bindingCount = 3,
+				.bindingCount = 2,
 				.pBindings    = (VkDescriptorSetLayoutBinding[]){
 					{
-						.binding            = 0,
-						.descriptorType     = VK_DESCRIPTOR_TYPE_SAMPLER,
-						.descriptorCount    = 1,
-						.stageFlags         = VK_SHADER_STAGE_FRAGMENT_BIT,
-						.pImmutableSamplers = &sampler
-					}, {
-						.binding         = 1,
+						.binding         = 0,
 						.descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
 						.descriptorCount = 1,
 						.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT
 					}, {
-						.binding         = 2,
-						.descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-						.descriptorCount = _countof(ktx2Images),
-						.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT
+						.binding            = 1,
+						.descriptorType     = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+						.descriptorCount    = _countof(ktx2Images),
+						.stageFlags         = VK_SHADER_STAGE_FRAGMENT_BIT,
+						.pImmutableSamplers = samplers
 					}
 				}
 			}, NULL, &descriptorSetLayout);
@@ -467,8 +469,8 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 						.type            = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
 						.descriptorCount = 1
 					}, {
-						.type            = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-						.descriptorCount = 1 + _countof(ktx2Images)
+						.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+						.descriptorCount = _countof(ktx2Images)
 					}
 				}
 			}, NULL, &descriptorPool);
@@ -670,7 +672,7 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 			vkUpdateDescriptorSets(device, 1, &(VkWriteDescriptorSet){
 				.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
 				.dstSet          = descriptorSet,
-				.dstBinding      = 1,
+				.dstBinding      = 0,
 				.dstArrayElement = 0,
 				.descriptorCount = 1,
 				.descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
@@ -796,8 +798,7 @@ static void CALLBACK messageFiberProc(LPVOID lpParameter) {
 	}
 }
 
-static Mat4* mvps;
-static struct Material* mats;
+static struct Instance* instances;
 
 static inline void drawScene(VkCommandBuffer commandBuffer, struct Camera camera, Vec4 clippingPlane, uint32_t recursionDepth, int32_t skipPortal) {
 	Mat4 viewMatrix;
@@ -901,8 +902,10 @@ static inline void drawScene(VkCommandBuffer commandBuffer, struct Camera camera
 				Vec3 translation = entity->translation + (entity->scale * min);
 				Mat4 modelMatrix = mat4FromRotationTranslationScale(entity->rotation, translation, scale);
 
-				mvps[instanceIndex] = viewProjection * modelMatrix;
-				mats[instanceIndex] = materials[primitive->material];
+				instances[instanceIndex] = (struct Instance){
+					.mvp = viewProjection * modelMatrix,
+					.material = materials[primitive->material]
+				};
 
 				vkCmdDrawIndexed(commandBuffer, primitive->indexCount, 1, primitive->firstIndex, primitive->vertexOffset, instanceIndex++);
 			}
@@ -1216,10 +1219,10 @@ void WinMainCRTStartup(void) {
 	vkUpdateDescriptorSets(device, 1, &(VkWriteDescriptorSet){
 		.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
 		.dstSet          = descriptorSet,
-		.dstBinding      = 2,
+		.dstBinding      = 1,
 		.dstArrayElement = 0,
 		.descriptorCount = _countof(ktx2Images),
-		.descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+		.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		.pImageInfo      = ktx2DescriptorImageInfos
 	}, 0, NULL);
 
@@ -1352,7 +1355,7 @@ void WinMainCRTStartup(void) {
 	};
 	VkPipelineVertexInputStateCreateInfo vertexInputStateTriangle = {
 		.sType                           = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-		.vertexBindingDescriptionCount   = 4,
+		.vertexBindingDescriptionCount   = 3,
 		.pVertexBindingDescriptions      = (VkVertexInputBindingDescription[]){
 			{
 				.binding   = 0,
@@ -1364,11 +1367,7 @@ void WinMainCRTStartup(void) {
 				.inputRate = VK_VERTEX_INPUT_RATE_VERTEX
 			}, {
 				.binding   = 2,
-				.stride    = sizeof(Mat4),
-				.inputRate = VK_VERTEX_INPUT_RATE_INSTANCE
-			}, {
-				.binding   = 3,
-				.stride    = sizeof(struct Material),
+				.stride    = sizeof(struct Instance),
 				.inputRate = VK_VERTEX_INPUT_RATE_INSTANCE
 			}
 		},
@@ -1416,14 +1415,14 @@ void WinMainCRTStartup(void) {
 				.offset   = 12 * sizeof(float)
 			}, {
 				.location = 8,
-				.binding  = 3,
+				.binding  = 2,
 				.format   = VK_FORMAT_R8G8B8A8_UNORM,
-				.offset   = offsetof(struct Material, r)
+				.offset   = offsetof(struct Instance, material.r)
 			},  {
 				.location = 9,
-				.binding  = 3,
+				.binding  = 2,
 				.format   = VK_FORMAT_R16_UINT,
-				.offset   = offsetof(struct Material, colorIndex)
+				.offset   = offsetof(struct Instance, material.colorIndex)
 			}
 		}
 	};
@@ -1432,7 +1431,7 @@ void WinMainCRTStartup(void) {
 		.vertexBindingDescriptionCount   = 1,
 		.pVertexBindingDescriptions      = (VkVertexInputBindingDescription[]){
 			{
-				.binding   = 4,
+				.binding   = 3,
 				.stride    = sizeof(float) * 3,
 				.inputRate = VK_VERTEX_INPUT_RATE_VERTEX
 			}
@@ -1441,7 +1440,7 @@ void WinMainCRTStartup(void) {
 		.pVertexAttributeDescriptions    = (VkVertexInputAttributeDescription[]){
 			{
 				.location = 0,
-				.binding  = 4,
+				.binding  = 3,
 				.format   = VK_FORMAT_R32G32B32_SFLOAT,
 				.offset   = 0
 			}
@@ -1795,8 +1794,7 @@ void WinMainCRTStartup(void) {
 		portals[1].rotation = quatRotateY(portals[1].rotation, -0.001);
 
 		instanceIndex = 0;
-		mvps          = buffers.instance.data + BUFFER_OFFSET_INSTANCE_MVPS + (frame * BUFFER_RANGE_INSTANCE_MVPS);
-		mats          = buffers.instance.data + BUFFER_OFFSET_INSTANCE_MATERIALS + (frame * BUFFER_RANGE_INSTANCE_MATERIALS);
+		instances     = buffers.instance.data + BUFFER_OFFSET_INSTANCES + (frame * BUFFER_RANGE_INSTANCES);
 
 		camera.position = player.translation; // todo: inter/extrapolate between frames
 
@@ -1811,17 +1809,15 @@ void WinMainCRTStartup(void) {
 		});
 
 		vkCmdBindDescriptorSets(commandBuffers[frame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 0, NULL);
-		vkCmdBindVertexBuffers(commandBuffers[frame], 0, 5, (VkBuffer[]){
+		vkCmdBindVertexBuffers(commandBuffers[frame], 0, 4, (VkBuffer[]){
 			buffers.vertex.buffer,
 			buffers.vertex.buffer,
-			buffers.instance.buffer,
 			buffers.instance.buffer,
 			buffers.particles.buffer
 		}, (VkDeviceSize[]){
 			BUFFER_OFFSET_VERTEX_POSITIONS,
 			BUFFER_OFFSET_VERTEX_ATTRIBUTES,
-			BUFFER_OFFSET_INSTANCE_MVPS + (frame * BUFFER_RANGE_INSTANCE_MVPS),
-			BUFFER_OFFSET_INSTANCE_MATERIALS + (frame * BUFFER_RANGE_INSTANCE_MATERIALS),
+			BUFFER_OFFSET_INSTANCES + (frame * BUFFER_RANGE_INSTANCES),
 			BUFFER_OFFSET_PARTICLES + (frame * BUFFER_RANGE_PARTICLES)
 		});
 
