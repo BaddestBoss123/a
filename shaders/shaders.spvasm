@@ -2,19 +2,29 @@ OpCapability Shader
 %glsl = OpExtInstImport "GLSL.std.450"
 OpMemoryModel Logical Simple
 
-OpEntryPoint Vertex %blit_vert "blit_vert" %gl_VertexIndex %vTexCoord %_
-; OpEntryPoint Vertex %portal_vert "portal_vert" %gl_VertexIndex
+OpEntryPoint Vertex %blit_vert "blit_vert" %gl_VertexIndex %vTexCoord %gl_PerVertex
+OpEntryPoint Vertex %skybox_vert "skybox_vert" %gl_VertexIndex %vDir %gl_PerVertex
+OpEntryPoint Vertex %portal_vert "portal_vert" %gl_VertexIndex %gl_PerVertex
 OpEntryPoint Fragment %portal_frag "portal_frag"
 OpExecutionMode %portal_frag OriginUpperLeft
 
+OpName %PushConstants "PushConstants"
+OpMemberName %PushConstants 0 "viewProjection"
+
 OpDecorate %gl_VertexIndex BuiltIn VertexIndex
 OpDecorate %vTexCoord Location 0
+OpDecorate %vDir Location 0
 
-OpMemberDecorate %gl_PerVertex 0 BuiltIn Position
+OpMemberDecorate %PerVertex 0 BuiltIn Position
 ; OpMemberDecorate %gl_PerVertex 1 BuiltIn PointSize
 ; OpMemberDecorate %gl_PerVertex 2 BuiltIn ClipDistance
 ; OpMemberDecorate %gl_PerVertex 3 BuiltIn CullDistance
 OpDecorate %gl_PerVertex Block
+
+OpDecorate %PushConstants Block
+OpMemberDecorate %PushConstants 0 ColMajor
+OpMemberDecorate %PushConstants 0 Offset 0
+OpMemberDecorate %PushConstants 0 MatrixStride 16
 
 %Void = OpTypeVoid
 %FnVoid = OpTypeFunction %Void
@@ -23,7 +33,9 @@ OpDecorate %gl_PerVertex Block
 %U32 = OpTypeInt 32 0
 %I32 = OpTypeInt 32 1
 %Vec2 = OpTypeVector %F32 2
+%Vec3 = OpTypeVector %F32 3
 %Vec4 = OpTypeVector %F32 4
+%Mat4 = OpTypeMatrix %Vec4 4
 
 %I32_0 = OpConstant %I32 0
 %I32_1 = OpConstant %I32 1
@@ -37,17 +49,25 @@ OpDecorate %gl_PerVertex Block
 
 %ArrF32_1 = OpTypeArray %F32 %I32_1
 
-%gl_PerVertex = OpTypeStruct %Vec4
+%PerVertex = OpTypeStruct %Vec4
+%PushConstants = OpTypeStruct %Mat4
+
+%PtrPushConstantPushConstants = OpTypePointer PushConstant %PushConstants
+%PtrPushConstantMat4 = OpTypePointer PushConstant %Mat4
 
 %PtrInputI32 = OpTypePointer Input %I32
-%PtrOutputgl_PerVertex = OpTypePointer Output %gl_PerVertex
+
+%PtrOutputPerVertex = OpTypePointer Output %PerVertex
 %PtrOutputF32 = OpTypePointer Output %F32
 %PtrOutputVec2 = OpTypePointer Output %Vec2
+%PtrOutputVec3 = OpTypePointer Output %Vec3
 %PtrOutputVec4 = OpTypePointer Output %Vec4
 
-%_ = OpVariable %PtrOutputgl_PerVertex Output
-%vTexCoord = OpVariable %PtrOutputVec2 Output
+%gl_PerVertex = OpVariable %PtrOutputPerVertex Output
 %gl_VertexIndex = OpVariable %PtrInputI32 Input
+%pushConstants = OpVariable %PtrPushConstantPushConstants PushConstant
+%vDir = OpVariable %PtrOutputVec3 Output
+%vTexCoord = OpVariable %PtrOutputVec2 Output
 
 %blit_vert = OpFunction %Void None %FnVoid
 	%5 = OpLabel
@@ -58,22 +78,45 @@ OpDecorate %gl_PerVertex Block
 	%20 = OpBitwiseAnd %I32 %13 %I32_2
 	%21 = OpConvertSToF %F32 %20
 	%22 = OpCompositeConstruct %Vec2 %18 %21
-		OpStore %vTexCoord %22
+	OpStore %vTexCoord %22
 	%31 = OpLoad %Vec2 %vTexCoord
 	%33 = OpVectorTimesScalar %Vec2 %31 %F32_2
 	%36 = OpFSub %Vec2 %33 %43
 	%38 = OpCompositeExtract %F32 %36 0
  	%39 = OpCompositeExtract %F32 %36 1
 	%40 = OpCompositeConstruct %Vec4 %38 %39 %F32_0 %F32_1
-	%42 = OpAccessChain %PtrOutputVec4 %_ %I32_0
-		OpStore %42 %40
+	%42 = OpAccessChain %PtrOutputVec4 %gl_PerVertex %I32_0
+	OpStore %42 %40
 	OpReturn
 OpFunctionEnd
 
-; %portal_vert = OpFunction %Void None %FnVoid
-;   %100 = OpLabel
-; 	OpReturn
-; OpFunctionEnd
+%skybox_vert = OpFunction %Void None %FnVoid
+	%50 = OpLabel
+	%51 = OpLoad %I32 %gl_VertexIndex
+	%52 = OpShiftLeftLogical %I32 %51 %I32_1
+	%53 = OpBitwiseAnd %I32 %52 %I32_2
+	%54 = OpConvertSToF %F32 %53
+	%55 = OpExtInst %F32 %glsl Fma %54 %F32_2 %F32_n1
+	%56 = OpBitwiseAnd %I32 %51 %I32_2
+	%57 = OpConvertSToF %F32 %56
+	%58 = OpExtInst %F32 %glsl Fma %57 %F32_2 %F32_n1
+	%59 = OpCompositeConstruct %Vec4 %55 %58 %F32_0 %F32_1
+	%60 = OpAccessChain %PtrOutputVec4 %gl_PerVertex %I32_0
+	OpStore %60 %59
+	%61 = OpAccessChain %PtrPushConstantMat4 %pushConstants %I32_0
+	%62 = OpLoad %Mat4 %61
+	%63 = OpExtInst %Mat4 %glsl MatrixInverse %62
+	%64 = OpLoad %Vec4 %60
+	%65 = OpMatrixTimesVector %Vec4 %63 %64
+	%66 = OpVectorShuffle %Vec3 %65 %65 0 1 2
+	OpStore %vDir %66
+	OpReturn
+OpFunctionEnd
+
+%portal_vert = OpFunction %Void None %FnVoid
+	%100 = OpLabel
+	OpReturn
+OpFunctionEnd
 
 %portal_frag = OpFunction %Void None %FnVoid
 	%509 = OpLabel
