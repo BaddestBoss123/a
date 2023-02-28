@@ -192,6 +192,7 @@ static VkViewport viewport = {
 	.maxDepth = 1.0
 };
 
+static bool minimized = false;
 static HMODULE hInstance;
 static LPVOID mainFiber;
 static uint64_t ticksElapsed;
@@ -381,10 +382,10 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 				.pDependencies   = &(VkSubpassDependency){
 					.srcSubpass      = VK_SUBPASS_EXTERNAL,
 					.dstSubpass      = 0,
-					.srcStageMask    = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-					.dstStageMask    = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-					.srcAccessMask   = 0,
-					.dstAccessMask   = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+					.srcStageMask    = VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT,
+					.dstStageMask    = VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT,
+					.srcAccessMask   = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+					.dstAccessMask   = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
 					.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT
 				}
 			}, NULL, &renderPass);
@@ -415,10 +416,10 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 				.pDependencies   = &(VkSubpassDependency){
 					.srcSubpass      = VK_SUBPASS_EXTERNAL,
 					.dstSubpass      = 0,
-					.srcStageMask    = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-					.dstStageMask    = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-					.srcAccessMask   = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-					.dstAccessMask   = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+					.srcStageMask    = VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT,
+					.dstStageMask    = VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT,
+					.srcAccessMask   = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+					.dstAccessMask   = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
 					.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT
 				}
 			}, NULL, &renderPassBlit);
@@ -500,8 +501,10 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 			vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, &surfaceCapabilities);
 
 			if (surfaceCapabilities.currentExtent.width == 0 || surfaceCapabilities.currentExtent.height == 0) {
-				// TODO
+				minimized = true;
+				break;
 			}
+			minimized = false;
 
 			scissor.extent  = surfaceCapabilities.currentExtent;
 			viewport.width  = (float)surfaceCapabilities.currentExtent.width;
@@ -1790,6 +1793,11 @@ void WinMainCRTStartup(void) {
 			ticksElapsed++;
 		}
 
+		if (minimized) {
+			Sleep(1);
+			continue;
+		}
+
 		portals[0].rotation = quatRotateY(portals[0].rotation, 0.001);
 		portals[1].rotation = quatRotateY(portals[1].rotation, -0.001);
 
@@ -1842,8 +1850,8 @@ void WinMainCRTStartup(void) {
 			.renderPass      = renderPassBlit,
 			.framebuffer     = swapchainFramebuffers[imageIndex],
 			.renderArea      = scissor,
-			.clearValueCount = 1,
-			.pClearValues    = &(VkClearValue){ { 0 } }
+			.clearValueCount = 0,
+			.pClearValues    = NULL, // &(VkClearValue){ { 0 } }
 		}, VK_SUBPASS_CONTENTS_INLINE);
 
 		vkCmdBindPipeline(commandBuffers[frame], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_BLIT]);
