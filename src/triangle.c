@@ -36,6 +36,7 @@
 #include "particle.vert.h"
 #include "particle.frag.h"
 #include "portal.vert.h"
+#include "shadow.vert.h"
 
 INCBIN(shaders_spv, "shaders.spv");
 INCBIN(indices, "indices");
@@ -64,17 +65,6 @@ enum Input {
 	INPUT_STOP_DOWN     = 0x0400,
 	INPUT_STOP_UP       = 0x0800,
 	INPUT_LOCK_CURSOR   = 0x1000
-};
-
-enum GraphicsPipeline {
-	GRAPHICS_PIPELINE_BLIT,
-	GRAPHICS_PIPELINE_TRIANGLE,
-	GRAPHICS_PIPELINE_SKYBOX,
-	GRAPHICS_PIPELINE_PARTICLE,
-	GRAPHICS_PIPELINE_PORTAL_STENCIL,
-	GRAPHICS_PIPELINE_PORTAL_DEPTH_CLEAR,
-	GRAPHICS_PIPELINE_PORTAL_DEPTH,
-	GRAPHICS_PIPELINE_MAX
 };
 
 struct Instance {
@@ -116,7 +106,6 @@ static struct {
 	struct Buffer vertex;
 	struct Buffer particles;
 	struct Buffer instance;
-	// struct Buffer uniform;
 } buffers = {
 	.staging   = {
 		.size                           = 256 * 1024 * 1024,
@@ -144,13 +133,18 @@ static struct {
 		.requiredMemoryPropertyFlagBits = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 		.optionalMemoryPropertyFlagBits = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
 	},
-	// .uniform   = {
-	// 	.size                           = FRAMES_IN_FLIGHT * 1024,
-	// 	.usage                          = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-	// 	.requiredMemoryPropertyFlagBits = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-	// 	.optionalMemoryPropertyFlagBits = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
-	// }
 };
+
+static struct {
+	VkPipeline blit;
+	VkPipeline triangle;
+	VkPipeline skybox;
+	VkPipeline particle;
+	VkPipeline portalStencil;
+	VkPipeline portalDepthClear;
+	VkPipeline portalDepthWrite;
+	VkPipeline shadow;
+} pipelines;
 
 static VkDevice device;
 static VkPhysicalDevice physicalDevice;
@@ -171,7 +165,6 @@ static VkFramebuffer framebuffer;
 static VkFramebuffer swapchainFramebuffers[8];
 static VkRect2D scissor;
 static VkPipelineLayout pipelineLayout;
-static VkPipeline graphicsPipelines[GRAPHICS_PIPELINE_MAX];
 static VkQueue queue;
 static VkCommandPool commandPools[FRAMES_IN_FLIGHT];
 static VkCommandBuffer commandBuffers[FRAMES_IN_FLIGHT];
@@ -181,11 +174,11 @@ static VkSemaphore semaphores[FRAMES_IN_FLIGHT];
 static VkShaderModule blitFrag;
 static VkShaderModule triangleVert;
 static VkShaderModule triangleFrag;
-// static VkShaderModule skyboxVert;
 static VkShaderModule skyboxFrag;
 static VkShaderModule particleVert;
 static VkShaderModule particleFrag;
 static VkShaderModule portalVert;
+static VkShaderModule shadowVert;
 static VkViewport viewport = {
 	.minDepth = 0.0,
 	.maxDepth = 1.0
@@ -260,12 +253,8 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 			vkCreateInstance(&(VkInstanceCreateInfo){
 				.sType                   = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
 				.pApplicationInfo        = &(VkApplicationInfo){
-					.sType              = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-					// .pApplicationName   = "triangle",
-					// .applicationVersion = 1,
-					// .pEngineName        = "Extreme Engine",
-					// .engineVersion      = 1,
-					.apiVersion         = apiVersion
+					.sType      = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+					.apiVersion = apiVersion
 				},
 				.enabledExtensionCount   = 2,
 				.ppEnabledExtensionNames = (const char*[]){
@@ -843,12 +832,12 @@ static inline void drawScene(VkCommandBuffer commandBuffer, struct Camera camera
 			};
 
 			vkCmdSetStencilReference(commandBuffer, VK_STENCIL_FACE_FRONT_AND_BACK, recursionDepth);
-			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_PORTAL_STENCIL]);
+			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.portalStencil);
 			vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Mat4), &portalMVP);
 			vkCmdDraw(commandBuffer, 6, 1, 0, 0);
 
 			vkCmdSetStencilReference(commandBuffer, VK_STENCIL_FACE_FRONT_AND_BACK, recursionDepth + 1);
-			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_PORTAL_DEPTH_CLEAR]);
+			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.portalDepthClear);
 			Mat4 squished = portalMVP;
 			squished[2][0] = 0;
 			squished[2][1] = 0;
@@ -867,14 +856,14 @@ static inline void drawScene(VkCommandBuffer commandBuffer, struct Camera camera
 
 			drawScene(commandBuffer, portalCamera, newClippingPlane, recursionDepth + 1, portal->link);
 
-			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_PORTAL_DEPTH]);
+			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.portalDepthWrite);
 			vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Mat4), &portalMVP);
 			vkCmdDraw(commandBuffer, 6, 1, 0, 0);
 		}
 	}
 
 	vkCmdSetStencilReference(commandBuffer, VK_STENCIL_FACE_FRONT_AND_BACK, recursionDepth);
-	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_TRIANGLE]);
+	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.triangle);
 	vkCmdBindIndexBuffer(commandBuffer, buffers.index.buffer, BUFFER_OFFSET_INDEX_VERTICES, VK_INDEX_TYPE_UINT16);
 
 	clippingPlane = vec4TransformMat4(clippingPlane, mat4Inverse(__builtin_matrix_transpose(viewProjection)));
@@ -933,11 +922,8 @@ static inline void drawScene(VkCommandBuffer commandBuffer, struct Camera camera
 		}
 	}
 
-	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_TRIANGLE]);
-	vkCmdBindIndexBuffer(commandBuffer, buffers.index.buffer, BUFFER_OFFSET_INDEX_VERTICES, VK_INDEX_TYPE_UINT16);
-
 	vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Mat4), &viewProjection);
-	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_SKYBOX]);
+	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.skybox);
 	vkCmdDraw(commandBuffer, 3, 1, 0, 0);
 }
 
@@ -1129,7 +1115,6 @@ void WinMainCRTStartup(void) {
 			}
 		};
 	}
-
 	vkAllocateMemory(device, &(VkMemoryAllocateInfo){
 		.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
 		.memoryTypeIndex = getMemoryTypeIndex(imageMemoryRequirements[0].memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0),
@@ -1228,6 +1213,92 @@ void WinMainCRTStartup(void) {
 		.pImageInfo      = ktx2DescriptorImageInfos
 	}, 0, NULL);
 
+	VkImage shadowImage;
+	VkDeviceMemory shadowImageMemory;
+	VkImageView shadowImageView;
+	VkFramebuffer shadowFramebuffer;
+	VkRenderPass renderPassShadow;
+	vkCreateImage(device, &(VkImageCreateInfo){
+		.sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+		.imageType   = VK_IMAGE_TYPE_2D,
+		.format      = VK_FORMAT_D16_UNORM,
+		.extent      = {
+			.width  = 1024,
+			.height = 1024,
+			.depth  = 1
+		},
+		.mipLevels   = 1,
+		.arrayLayers = 1,
+		.samples     = VK_SAMPLE_COUNT_1_BIT,
+		.usage       = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
+	}, NULL, &shadowImage);
+	VkMemoryRequirements memoryRequirements;
+	vkGetImageMemoryRequirements(device, shadowImage, &memoryRequirements);
+	vkAllocateMemory(device, &(VkMemoryAllocateInfo){
+		.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+		.pNext           = &(VkMemoryDedicatedAllocateInfo){
+			.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
+			.image = shadowImage
+		},
+		.allocationSize  = memoryRequirements.size,
+		.memoryTypeIndex = getMemoryTypeIndex(memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0)
+	}, NULL, &shadowImageMemory);
+	vkBindImageMemory(device, shadowImage, shadowImageMemory, 0);
+	vkCreateImageView(device, &(VkImageViewCreateInfo){
+		.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+		.image            = shadowImage,
+		.viewType         = VK_IMAGE_VIEW_TYPE_2D,
+		.format           = VK_FORMAT_D16_UNORM,
+		.subresourceRange = {
+			.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+			.levelCount = 1,
+			.layerCount = 1
+		}
+	}, NULL, &shadowImageView);
+
+	vkCreateRenderPass(device, &(VkRenderPassCreateInfo){
+		.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+		.attachmentCount = 1,
+		.pAttachments    = &(VkAttachmentDescription){
+			.format         = VK_FORMAT_D16_UNORM,
+			.samples        = VK_SAMPLE_COUNT_1_BIT,
+			.loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR,
+			.storeOp        = VK_ATTACHMENT_STORE_OP_STORE,
+			.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+			.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			.initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED,
+			.finalLayout    = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+		},
+		.subpassCount    = 1,
+		.pSubpasses	     = &(VkSubpassDescription){
+			.pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS,
+			.pDepthStencilAttachment = &(VkAttachmentReference){
+				.attachment = 0,
+				.layout     = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+			}
+		},
+		.dependencyCount = 1,
+		.pDependencies   = &(VkSubpassDependency){
+			.srcSubpass      = VK_SUBPASS_EXTERNAL,
+			.dstSubpass      = 0,
+			.srcStageMask    = VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT,
+			.dstStageMask    = VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT,
+			.srcAccessMask   = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+			.dstAccessMask   = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+			.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT
+		}
+	}, NULL, &renderPassShadow);
+
+	vkCreateFramebuffer(device, &(VkFramebufferCreateInfo){
+		.sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+		.renderPass      = renderPassShadow,
+		.attachmentCount = 1,
+		.pAttachments    = &shadowImageView,
+		.width           = 1024,
+		.height          = 1024,
+		.layers          = 1
+	}, NULL, &shadowFramebuffer);
+
 	vkCreatePipelineLayout(device, &(VkPipelineLayoutCreateInfo){
 		.sType                  = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
 		.setLayoutCount         = 1,
@@ -1281,6 +1352,11 @@ void WinMainCRTStartup(void) {
 		.pCode    = portal_vert,
 		.codeSize = sizeof(portal_vert)
 	}, NULL, &portalVert);
+	vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
+		.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+		.pCode    = shadow_vert,
+		.codeSize = sizeof(shadow_vert)
+	}, NULL, &shadowVert);
 
 	VkPipelineShaderStageCreateInfo shaderStagesBlit[] = {
 		{
@@ -1344,7 +1420,20 @@ void WinMainCRTStartup(void) {
 			.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 			.stage  = VK_SHADER_STAGE_FRAGMENT_BIT,
 			.module = shaderModule,
-			.pName  = "portal_frag"
+			.pName  = "empty_frag"
+		}
+	};
+	VkPipelineShaderStageCreateInfo shaderStagesShadow[] = {
+		{
+			.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+			.stage  = VK_SHADER_STAGE_VERTEX_BIT,
+			.module = shadowVert,
+			.pName  = "main"
+		}, {
+			.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+			.stage  = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.module = shaderModule,
+			.pName  = "empty_frag"
 		}
 	};
 	VkPipelineVertexInputStateCreateInfo vertexInputStateNone = {
@@ -1423,6 +1512,50 @@ void WinMainCRTStartup(void) {
 			}
 		}
 	};
+	VkPipelineVertexInputStateCreateInfo vertexInputStateShadow = {
+		.sType                           = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+		.vertexBindingDescriptionCount   = 2,
+		.pVertexBindingDescriptions      = (VkVertexInputBindingDescription[]){
+			{
+				.binding   = 0,
+				.stride    = sizeof(struct VertexPosition),
+				.inputRate = VK_VERTEX_INPUT_RATE_VERTEX
+			}, {
+				.binding   = 2,
+				.stride    = sizeof(struct Instance),
+				.inputRate = VK_VERTEX_INPUT_RATE_INSTANCE
+			}
+		},
+		.vertexAttributeDescriptionCount = 5,
+		.pVertexAttributeDescriptions    = (VkVertexInputAttributeDescription[]){
+			{
+				.location = 0,
+				.binding  = 0,
+				.format   = VK_FORMAT_R16G16B16_UNORM,
+				.offset   = offsetof(struct VertexPosition, x)
+			}, {
+				.location = 4,
+				.binding  = 2,
+				.format   = VK_FORMAT_R32G32B32A32_SFLOAT,
+				.offset   = 0
+			}, {
+				.location = 5,
+				.binding  = 2,
+				.format   = VK_FORMAT_R32G32B32A32_SFLOAT,
+				.offset   = 4 * sizeof(float)
+			}, {
+				.location = 6,
+				.binding  = 2,
+				.format   = VK_FORMAT_R32G32B32A32_SFLOAT,
+				.offset   = 8 * sizeof(float)
+			}, {
+				.location = 7,
+				.binding  = 2,
+				.format   = VK_FORMAT_R32G32B32A32_SFLOAT,
+				.offset   = 12 * sizeof(float)
+			}
+		}
+	};
 	VkPipelineVertexInputStateCreateInfo vertexInputStateParticle = {
 		.sType                           = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
 		.vertexBindingDescriptionCount   = 1,
@@ -1475,6 +1608,9 @@ void WinMainCRTStartup(void) {
 		.sType                = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
 		.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT
 	};
+	VkPipelineDepthStencilStateCreateInfo depthStencilStateNone = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+	};
 	VkPipelineDepthStencilStateCreateInfo depthStencilStateTriangle = {
 		.sType             = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
 		.depthTestEnable   = VK_TRUE,
@@ -1498,8 +1634,10 @@ void WinMainCRTStartup(void) {
 			.writeMask   = 0
 		}
 	};
-	VkPipelineDepthStencilStateCreateInfo depthStencilStateNone = {
-		.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+	VkPipelineDepthStencilStateCreateInfo depthStencilStateShadow = {
+		.sType           = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+		.depthTestEnable = VK_TRUE,
+		.depthCompareOp  = VK_COMPARE_OP_GREATER
 	};
 	VkPipelineDepthStencilStateCreateInfo depthStencilStateSkybox = {
 		.sType             = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
@@ -1623,8 +1761,8 @@ void WinMainCRTStartup(void) {
 		}
 	};
 
-	vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, GRAPHICS_PIPELINE_MAX, (VkGraphicsPipelineCreateInfo[]){
-		[GRAPHICS_PIPELINE_BLIT] = {
+	vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, sizeof(pipelines) / sizeof(VkPipeline), (VkGraphicsPipelineCreateInfo[]){
+		{ // blit
 			.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
 			.stageCount          = _countof(shaderStagesBlit),
 			.pStages             = shaderStagesBlit,
@@ -1638,7 +1776,7 @@ void WinMainCRTStartup(void) {
 			.pDynamicState       = &dynamicState,
 			.layout              = pipelineLayout,
 			.renderPass          = renderPassBlit
-		}, [GRAPHICS_PIPELINE_TRIANGLE] = {
+		}, { // triangle
 			.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
 			.stageCount          = _countof(shaderStagesTriangle),
 			.pStages             = shaderStagesTriangle,
@@ -1652,7 +1790,7 @@ void WinMainCRTStartup(void) {
 			.pDynamicState       = &dynamicStateStencil,
 			.layout              = pipelineLayout,
 			.renderPass          = renderPass
-		}, [GRAPHICS_PIPELINE_SKYBOX] = {
+		}, { // skybox
 			.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
 			.stageCount          = _countof(shaderStagesSkybox),
 			.pStages             = shaderStagesSkybox,
@@ -1666,7 +1804,7 @@ void WinMainCRTStartup(void) {
 			.pDynamicState       = &dynamicStateStencil,
 			.layout              = pipelineLayout,
 			.renderPass          = renderPass
-		}, [GRAPHICS_PIPELINE_PARTICLE] = {
+		}, { // particle
 			.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
 			.stageCount          = _countof(shaderStagesParticle),
 			.pStages             = shaderStagesParticle,
@@ -1680,7 +1818,7 @@ void WinMainCRTStartup(void) {
 			.pDynamicState       = &dynamicStateStencil,
 			.layout              = pipelineLayout,
 			.renderPass          = renderPass
-		}, [GRAPHICS_PIPELINE_PORTAL_STENCIL] = {
+		}, { // portalStencil
 			.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
 			.stageCount          = _countof(shaderStagesPortal),
 			.pStages             = shaderStagesPortal,
@@ -1694,7 +1832,7 @@ void WinMainCRTStartup(void) {
 			.pDynamicState       = &dynamicStateStencil,
 			.layout              = pipelineLayout,
 			.renderPass          = renderPass
-		}, [GRAPHICS_PIPELINE_PORTAL_DEPTH_CLEAR] = {
+		}, { // portalDepthClear
 			.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
 			.stageCount          = _countof(shaderStagesPortal),
 			.pStages             = shaderStagesPortal,
@@ -1708,7 +1846,7 @@ void WinMainCRTStartup(void) {
 			.pDynamicState       = &dynamicStateStencil,
 			.layout              = pipelineLayout,
 			.renderPass          = renderPass
-		}, [GRAPHICS_PIPELINE_PORTAL_DEPTH] = {
+		}, { // portalDepthWrite
 			.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
 			.stageCount          = _countof(shaderStagesPortal),
 			.pStages             = shaderStagesPortal,
@@ -1722,8 +1860,22 @@ void WinMainCRTStartup(void) {
 			.pDynamicState       = &dynamicStateStencil,
 			.layout              = pipelineLayout,
 			.renderPass          = renderPass
+		}, { // shadow
+			.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+			.stageCount          = _countof(shaderStagesShadow),
+			.pStages             = shaderStagesShadow,
+			.pVertexInputState   = &vertexInputStateShadow,
+			.pInputAssemblyState = &inputAssemblyState,
+			.pViewportState      = &viewportState,
+			.pRasterizationState = &rasterizationState,
+			.pMultisampleState   = &multisampleState,
+			.pDepthStencilState  = &depthStencilStateShadow,
+			.pColorBlendState    = &colorBlendState,
+			.pDynamicState       = &dynamicState,
+			.layout              = pipelineLayout,
+			.renderPass          = renderPassShadow
 		}
-	}, NULL, graphicsPipelines);
+	}, NULL, (VkPipeline*)&pipelines);
 
 	for (;;) {
 		SwitchToFiber(messageFiber);
@@ -1828,6 +1980,22 @@ void WinMainCRTStartup(void) {
 
 		vkCmdBeginRenderPass(commandBuffers[frame], &(VkRenderPassBeginInfo){
 			.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+			.renderPass      = renderPassShadow,
+			.framebuffer     = shadowFramebuffer,
+			.renderArea      = {
+				.extent = {
+					.width  = 1024,
+					.height = 1024
+				}
+			},
+			.clearValueCount = 1,
+			.pClearValues    = &(VkClearValue){ { 0 } }
+		}, VK_SUBPASS_CONTENTS_INLINE);
+		// draw all triangles
+		vkCmdEndRenderPass(commandBuffers[frame]);
+
+		vkCmdBeginRenderPass(commandBuffers[frame], &(VkRenderPassBeginInfo){
+			.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
 			.renderPass      = renderPass,
 			.framebuffer     = framebuffer,
 			.renderArea      = scissor,
@@ -1844,11 +2012,9 @@ void WinMainCRTStartup(void) {
 			.renderPass      = renderPassBlit,
 			.framebuffer     = swapchainFramebuffers[imageIndex],
 			.renderArea      = scissor,
-			.clearValueCount = 0,
-			.pClearValues    = NULL, // &(VkClearValue){ { 0 } }
 		}, VK_SUBPASS_CONTENTS_INLINE);
 
-		vkCmdBindPipeline(commandBuffers[frame], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines[GRAPHICS_PIPELINE_BLIT]);
+		vkCmdBindPipeline(commandBuffers[frame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.blit);
 		vkCmdDraw(commandBuffers[frame], 3, 1, 0, 0);
 
 		vkCmdEndRenderPass(commandBuffers[frame]);

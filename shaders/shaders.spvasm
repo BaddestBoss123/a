@@ -5,8 +5,8 @@ OpMemoryModel Logical Simple
 OpEntryPoint Vertex %blit_vert "blit_vert" %gl_VertexIndex %vTexCoord %gl_PerVertex
 OpEntryPoint Vertex %skybox_vert "skybox_vert" %gl_VertexIndex %vDir %gl_PerVertex
 OpEntryPoint Vertex %portal_vert "portal_vert" %gl_VertexIndex %gl_PerVertex
-OpEntryPoint Fragment %portal_frag "portal_frag"
-OpExecutionMode %portal_frag OriginUpperLeft
+OpEntryPoint Fragment %empty_frag "empty_frag"
+OpExecutionMode %empty_frag OriginUpperLeft
 
 OpDecorate %gl_VertexIndex BuiltIn VertexIndex
 OpDecorate %vTexCoord Location 0
@@ -115,7 +115,7 @@ OpFunctionEnd
 	OpReturn
 OpFunctionEnd
 
-%portal_frag = OpFunction %Void None %FnVoid
+%empty_frag = OpFunction %Void None %FnVoid
 	%509 = OpLabel
 	OpReturn
 OpFunctionEnd
