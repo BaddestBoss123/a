@@ -1,1 +1,1 @@
-install clang and vulkan SDK, then run build.cmd
+install clang, compressonatorcli, and vulkan SDK, then run build.cmd

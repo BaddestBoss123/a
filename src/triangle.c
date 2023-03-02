@@ -32,7 +32,6 @@
 #include "blit.frag.h"
 #include "triangle.vert.h"
 #include "triangle.frag.h"
-#include "skybox.vert.h"
 #include "skybox.frag.h"
 #include "particle.vert.h"
 #include "particle.frag.h"
@@ -182,7 +181,7 @@ static VkSemaphore semaphores[FRAMES_IN_FLIGHT];
 static VkShaderModule blitFrag;
 static VkShaderModule triangleVert;
 static VkShaderModule triangleFrag;
-static VkShaderModule skyboxVert;
+// static VkShaderModule skyboxVert;
 static VkShaderModule skyboxFrag;
 static VkShaderModule particleVert;
 static VkShaderModule particleFrag;
@@ -1039,8 +1038,8 @@ void WinMainCRTStartup(void) {
 		quadIndices[i + 0] = (4 * (i / 6)) + 0;
 		quadIndices[i + 1] = (4 * (i / 6)) + 1;
 		quadIndices[i + 2] = (4 * (i / 6)) + 2;
-		quadIndices[i + 3] = (4 * (i / 6)) + 0;
-		quadIndices[i + 4] = (4 * (i / 6)) + 2;
+		quadIndices[i + 3] = (4 * (i / 6)) + 2;
+		quadIndices[i + 4] = (4 * (i / 6)) + 1;
 		quadIndices[i + 5] = (4 * (i / 6)) + 3;
 	}
 
@@ -1264,11 +1263,6 @@ void WinMainCRTStartup(void) {
 	}, NULL, &triangleFrag);
 	vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
 		.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-		.pCode    = skybox_vert,
-		.codeSize = sizeof(skybox_vert)
-	}, NULL, &skyboxVert);
-	vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
-		.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
 		.pCode    = skybox_frag,
 		.codeSize = sizeof(skybox_frag)
 	}, NULL, &skyboxFrag);
@@ -1318,8 +1312,8 @@ void WinMainCRTStartup(void) {
 		{
 			.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 			.stage  = VK_SHADER_STAGE_VERTEX_BIT,
-			.module = skyboxVert,
-			.pName  = "main"
+			.module = shaderModule,
+			.pName  = "skybox_vert"
 		}, {
 			.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 			.stage  = VK_SHADER_STAGE_FRAGMENT_BIT,

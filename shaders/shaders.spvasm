@@ -8,18 +8,15 @@ OpEntryPoint Vertex %portal_vert "portal_vert" %gl_VertexIndex %gl_PerVertex
 OpEntryPoint Fragment %portal_frag "portal_frag"
 OpExecutionMode %portal_frag OriginUpperLeft
 
-OpName %PushConstants "PushConstants"
-OpMemberName %PushConstants 0 "viewProjection"
-
 OpDecorate %gl_VertexIndex BuiltIn VertexIndex
 OpDecorate %vTexCoord Location 0
 OpDecorate %vDir Location 0
 
 OpMemberDecorate %PerVertex 0 BuiltIn Position
-; OpMemberDecorate %gl_PerVertex 1 BuiltIn PointSize
-; OpMemberDecorate %gl_PerVertex 2 BuiltIn ClipDistance
-; OpMemberDecorate %gl_PerVertex 3 BuiltIn CullDistance
-OpDecorate %gl_PerVertex Block
+; OpMemberDecorate %PerVertex 1 BuiltIn PointSize
+; OpMemberDecorate %PerVertex 2 BuiltIn ClipDistance
+; OpMemberDecorate %PerVertex 3 BuiltIn CullDistance
+OpDecorate %PerVertex Block
 
 OpDecorate %PushConstants Block
 OpMemberDecorate %PushConstants 0 ColMajor

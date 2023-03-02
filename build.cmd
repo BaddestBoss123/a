@@ -11,66 +11,66 @@ if not exist ktx2 mkdir ktx2
 
 pushd shaders
 rem glslangValidator --target-env vulkan1.0 blit.vert -V -o blit.vert.spv
-rem glslangValidator --target-env vulkan1.0 blit.frag -V -o blit.frag.spv
-rem glslangValidator --target-env vulkan1.0 triangle.vert -V -o triangle.vert.spv
-rem glslangValidator --target-env vulkan1.0 triangle.frag -V -o triangle.frag.spv
+glslangValidator --target-env vulkan1.0 blit.frag -V -o blit.frag.spv
+glslangValidator --target-env vulkan1.0 triangle.vert -V -o triangle.vert.spv
+glslangValidator --target-env vulkan1.0 triangle.frag -V -o triangle.frag.spv
 rem glslangValidator --target-env vulkan1.0 skybox.vert -V -o skybox.vert.spv
-rem glslangValidator --target-env vulkan1.0 skybox.frag -V -o skybox.frag.spv
-rem glslangValidator --target-env vulkan1.0 particle.vert -V -o particle.vert.spv
-rem glslangValidator --target-env vulkan1.0 particle.frag -V -o particle.frag.spv
-rem glslangValidator --target-env vulkan1.0 portal.vert -V -o portal.vert.spv
+glslangValidator --target-env vulkan1.0 skybox.frag -V -o skybox.frag.spv
+glslangValidator --target-env vulkan1.0 particle.vert -V -o particle.vert.spv
+glslangValidator --target-env vulkan1.0 particle.frag -V -o particle.frag.spv
+glslangValidator --target-env vulkan1.0 portal.vert -V -o portal.vert.spv
 rem glslangValidator --target-env vulkan1.0 portal.frag -V -o portal.frag.spv
 
 rem glslangValidator --target-env vulkan1.0 blit.vert -V --vn blit_vert -o blit.vert.h
-rem glslangValidator --target-env vulkan1.0 blit.frag -V --vn blit_frag -o blit.frag.h
-rem glslangValidator --target-env vulkan1.0 triangle.vert -V --vn triangle_vert -o triangle.vert.h
-rem glslangValidator --target-env vulkan1.0 triangle.frag -V --vn triangle_frag -o triangle.frag.h
+glslangValidator --target-env vulkan1.0 blit.frag -V --vn blit_frag -o blit.frag.h
+glslangValidator --target-env vulkan1.0 triangle.vert -V --vn triangle_vert -o triangle.vert.h
+glslangValidator --target-env vulkan1.0 triangle.frag -V --vn triangle_frag -o triangle.frag.h
 rem glslangValidator --target-env vulkan1.0 skybox.vert -V --vn skybox_vert -o skybox.vert.h
-rem glslangValidator --target-env vulkan1.0 skybox.frag -V --vn skybox_frag -o skybox.frag.h
-rem glslangValidator --target-env vulkan1.0 particle.vert -V --vn particle_vert -o particle.vert.h
-rem glslangValidator --target-env vulkan1.0 particle.frag -V --vn particle_frag -o particle.frag.h
-rem glslangValidator --target-env vulkan1.0 portal.vert -V --vn portal_vert -o portal.vert.h
+glslangValidator --target-env vulkan1.0 skybox.frag -V --vn skybox_frag -o skybox.frag.h
+glslangValidator --target-env vulkan1.0 particle.vert -V --vn particle_vert -o particle.vert.h
+glslangValidator --target-env vulkan1.0 particle.frag -V --vn particle_frag -o particle.frag.h
+glslangValidator --target-env vulkan1.0 portal.vert -V --vn portal_vert -o portal.vert.h
 rem glslangValidator --target-env vulkan1.0 portal.frag -V --vn portal_frag -o portal.frag.h
 
 rem spirv-opt blit.vert.spv -Os -o blit.vert.spv
-rem spirv-opt blit.frag.spv -Os -o blit.frag.spv
-rem spirv-opt triangle.vert.spv -Os -o triangle.vert.spv
-rem spirv-opt triangle.frag.spv -Os -o triangle.frag.spv
+spirv-opt blit.frag.spv -Os -o blit.frag.spv
+spirv-opt triangle.vert.spv -Os -o triangle.vert.spv
+spirv-opt triangle.frag.spv -Os -o triangle.frag.spv
 rem spirv-opt skybox.vert.spv -Os -o skybox.vert.spv
-rem spirv-opt skybox.frag.spv -Os -o skybox.frag.spv
-rem spirv-opt particle.vert.spv -Os -o particle.vert.spv
-rem spirv-opt particle.frag.spv -Os -o particle.frag.spv
-rem spirv-opt portal.vert.spv -Os -o portal.vert.spv
+spirv-opt skybox.frag.spv -Os -o skybox.frag.spv
+spirv-opt particle.vert.spv -Os -o particle.vert.spv
+spirv-opt particle.frag.spv -Os -o particle.frag.spv
+spirv-opt portal.vert.spv -Os -o portal.vert.spv
 rem spirv-opt portal.frag.spv -Os -o portal.frag.spv
 
 rem spirv-dis blit.vert.spv -o blit.vert.spvasm
-rem spirv-dis blit.frag.spv -o blit.frag.spvasm
-rem spirv-dis triangle.vert.spv -o triangle.vert.spvasm
-rem spirv-dis triangle.frag.spv -o triangle.frag.spvasm
+spirv-dis blit.frag.spv -o blit.frag.spvasm
+spirv-dis triangle.vert.spv -o triangle.vert.spvasm
+spirv-dis triangle.frag.spv -o triangle.frag.spvasm
 rem spirv-dis skybox.vert.spv -o skybox.vert.spvasm
-rem spirv-dis skybox.frag.spv -o skybox.frag.spvasm
-rem spirv-dis particle.vert.spv -o particle.vert.spvasm
-rem spirv-dis particle.frag.spv -o particle.frag.spvasm
-rem spirv-dis portal.vert.spv -o portal.vert.spvasm
+spirv-dis skybox.frag.spv -o skybox.frag.spvasm
+spirv-dis particle.vert.spv -o particle.vert.spvasm
+spirv-dis particle.frag.spv -o particle.frag.spvasm
+spirv-dis portal.vert.spv -o portal.vert.spvasm
 rem spirv-dis portal.frag.spv -o portal.frag.spvasm
 
 spirv-as shaders.spvasm --target-env vulkan1.0 -o shaders.spv
 spirv-val shaders.spv
 popd
 
-rem clang src/asset_generator.c -g -o build/asset_generator.exe %COMPILE_FLAGS% %LINK_FLAGS%
-rem pushd build
-rem asset_generator.exe
-rem move ktx2.cmd ../ktx2.cmd
-rem move assets.h ../src/assets.h
-rem move scene.h ../src/scene.h
-rem move indices ../indices
-rem move vertices ../vertices
-rem move attributes ../attributes
-rem popd
-rem call ktx2.cmd
-rem del ktx2.cmd
+clang src/asset_generator.c -g -o build/asset_generator.exe %COMPILE_FLAGS% %LINK_FLAGS%
+pushd build
+asset_generator.exe
+move ktx2.cmd ../ktx2.cmd
+move assets.h ../src/assets.h
+move scene.h ../src/scene.h
+move indices ../indices
+move vertices ../vertices
+move attributes ../attributes
+popd
+call ktx2.cmd
+del ktx2.cmd
 
-rem clang src/dwrite.cpp src/triangle.c -Ofast -o build/triangle_speed.exe %COMPILE_FLAGS% %LINK_FLAGS%
-rem clang src/dwrite.cpp src/triangle.c -Oz -o build/triangle_size.exe %COMPILE_FLAGS% %LINK_FLAGS%
-rem clang src/dwrite.cpp src/triangle.c -g -o build/triangle_debug.exe %COMPILE_FLAGS% %LINK_FLAGS%
+clang src/dwrite.cpp src/triangle.c -Ofast -o build/triangle_speed.exe %COMPILE_FLAGS% %LINK_FLAGS%
+clang src/dwrite.cpp src/triangle.c -Oz -o build/triangle_size.exe %COMPILE_FLAGS% %LINK_FLAGS%
+clang src/dwrite.cpp src/triangle.c -g -o build/triangle_debug.exe %COMPILE_FLAGS% %LINK_FLAGS%
