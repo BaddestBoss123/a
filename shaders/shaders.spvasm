@@ -37,6 +37,7 @@ OpMemberDecorate %PushConstants 0 MatrixStride 16
 %I32_0 = OpConstant %I32 0
 %I32_1 = OpConstant %I32 1
 %I32_2 = OpConstant %I32 2
+%I32_6 = OpConstant %I32 6
 %F32_n1 = OpConstant %F32 -1
 %F32_0 = OpConstant %F32 0
 %F32_1 = OpConstant %F32 1
@@ -48,6 +49,8 @@ OpMemberDecorate %PushConstants 0 MatrixStride 16
 
 %PerVertex = OpTypeStruct %Vec4
 %PushConstants = OpTypeStruct %Mat4
+
+%PtrFunctionVec2 = OpTypePointer Function %Vec2
 
 %PtrPushConstantPushConstants = OpTypePointer PushConstant %PushConstants
 %PtrPushConstantMat4 = OpTypePointer PushConstant %Mat4
@@ -112,6 +115,19 @@ OpFunctionEnd
 
 %portal_vert = OpFunction %Void None %FnVoid
 	%100 = OpLabel
+	%101 = OpLoad %I32 %gl_VertexIndex
+	%102 = OpSMod %I32 %101 %I32_2
+	%103 = OpConvertSToF %F32 %102
+	%104 = OpExtInst %F32 %glsl Fma %F32_2 %103 %F32_n1
+	%105 = OpSDiv %I32 %101 %I32_2
+	%106 = OpConvertSToF %F32 %105
+	%107 = OpExtInst %F32 %glsl Fma %F32_2 %106 %F32_n1
+	%108 = OpAccessChain %PtrPushConstantMat4 %pushConstants %I32_0
+	%109 = OpLoad %Mat4 %108
+	%110 = OpCompositeConstruct %Vec4 %104 %107 %F32_0 %F32_1
+	%111 = OpMatrixTimesVector %Vec4 %109 %110
+	%112 = OpAccessChain %PtrOutputVec4 %gl_PerVertex %I32_0
+	OpStore %112 %111
 	OpReturn
 OpFunctionEnd
 

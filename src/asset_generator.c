@@ -1,20 +1,17 @@
 #define WIN32_LEAN_AND_MEAN
 #define _CRT_SECURE_NO_WARNINGS
 #include <Windows.h>
+#undef near
+#undef far
 #include <stdbool.h>
 #define CGLTF_IMPLEMENTATION
 #include "cgltf.h"
+#include "math.h"
 
 #pragma comment(lib, "kernel32")
 #pragma comment(lib, "user32")
 #pragma comment(lib, "vcruntime.lib")
 #pragma comment(lib, "ucrt.lib")
-
-typedef float Mat4 __attribute__((matrix_type(4, 4)));
-typedef float Vec2 __attribute__((ext_vector_type(2)));
-typedef float Vec3 __attribute__((ext_vector_type(3)));
-typedef float Vec4 __attribute__((ext_vector_type(4)));
-typedef float Quat __attribute__((ext_vector_type(4)));
 
 struct VertexPosition {
 	uint16_t x, y, z;

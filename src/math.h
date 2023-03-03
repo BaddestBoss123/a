@@ -56,43 +56,63 @@ static inline Mat4 mat4Identity(void) {
 }
 
 static inline Mat4 mat4Inverse(Mat4 a) {
-	// todo: simd
-	float a00 = a[0][0], a01 = a[1][0], a02 = a[2][0], a03 = a[3][0];
-	float a10 = a[0][1], a11 = a[1][1], a12 = a[2][1], a13 = a[3][1];
-	float a20 = a[0][2], a21 = a[1][2], a22 = a[2][2], a23 = a[3][2];
-	float a30 = a[0][3], a31 = a[1][3], a32 = a[2][3], a33 = a[3][3];
-	float b00 = a00 * a11 - a01 * a10;
-	float b01 = a00 * a12 - a02 * a10;
-	float b02 = a00 * a13 - a03 * a10;
-	float b03 = a01 * a12 - a02 * a11;
-	float b04 = a01 * a13 - a03 * a11;
-	float b05 = a02 * a13 - a03 * a12;
-	float b06 = a20 * a31 - a21 * a30;
-	float b07 = a20 * a32 - a22 * a30;
-	float b08 = a20 * a33 - a23 * a30;
-	float b09 = a21 * a32 - a22 * a31;
-	float b10 = a21 * a33 - a23 * a31;
-	float b11 = a22 * a33 - a23 * a32;
+	float b00 = a[0][0] * a[1][1] - a[1][0] * a[0][1];
+	float b01 = a[0][0] * a[2][1] - a[2][0] * a[0][1];
+	float b02 = a[0][0] * a[3][1] - a[3][0] * a[0][1];
+	float b03 = a[1][0] * a[2][1] - a[2][0] * a[1][1];
+	float b04 = a[1][0] * a[3][1] - a[3][0] * a[1][1];
+	float b05 = a[2][0] * a[3][1] - a[3][0] * a[2][1];
+	float b06 = a[0][2] * a[1][3] - a[1][2] * a[0][3];
+	float b07 = a[0][2] * a[2][3] - a[2][2] * a[0][3];
+	float b08 = a[0][2] * a[3][3] - a[3][2] * a[0][3];
+	float b09 = a[1][2] * a[2][3] - a[2][2] * a[1][3];
+	float b10 = a[1][2] * a[3][3] - a[3][2] * a[1][3];
+	float b11 = a[2][2] * a[3][3] - a[3][2] * a[2][3];
 	float det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
 
 	det = 1.0 / det;
 	Mat4 ret;
-	ret[0][0] = (a11 * b11 - a12 * b10 + a13 * b09) * det;
-	ret[1][0] = (a02 * b10 - a01 * b11 - a03 * b09) * det;
-	ret[2][0] = (a31 * b05 - a32 * b04 + a33 * b03) * det;
-	ret[3][0] = (a22 * b04 - a21 * b05 - a23 * b03) * det;
-	ret[0][1] = (a12 * b08 - a10 * b11 - a13 * b07) * det;
-	ret[1][1] = (a00 * b11 - a02 * b08 + a03 * b07) * det;
-	ret[2][1] = (a32 * b02 - a30 * b05 - a33 * b01) * det;
-	ret[3][1] = (a20 * b05 - a22 * b02 + a23 * b01) * det;
-	ret[0][2] = (a10 * b10 - a11 * b08 + a13 * b06) * det;
-	ret[1][2] = (a01 * b08 - a00 * b10 - a03 * b06) * det;
-	ret[2][2] = (a30 * b04 - a31 * b02 + a33 * b00) * det;
-	ret[3][2] = (a21 * b02 - a20 * b04 - a23 * b00) * det;
-	ret[0][3] = (a11 * b07 - a10 * b09 - a12 * b06) * det;
-	ret[1][3] = (a00 * b09 - a01 * b07 + a02 * b06) * det;
-	ret[2][3] = (a31 * b01 - a30 * b03 - a32 * b00) * det;
-	ret[3][3] = (a20 * b03 - a21 * b01 + a22 * b00) * det;
+	ret[0][0] = (a[1][1] * b11 - a[2][1] * b10 + a[3][1] * b09) * det;
+	ret[1][0] = (a[2][0] * b10 - a[1][0] * b11 - a[3][0] * b09) * det;
+	ret[2][0] = (a[1][3] * b05 - a[2][3] * b04 + a[3][3] * b03) * det;
+	ret[3][0] = (a[2][2] * b04 - a[1][2] * b05 - a[3][2] * b03) * det;
+	ret[0][1] = (a[2][1] * b08 - a[0][1] * b11 - a[3][1] * b07) * det;
+	ret[1][1] = (a[0][0] * b11 - a[2][0] * b08 + a[3][0] * b07) * det;
+	ret[2][1] = (a[2][3] * b02 - a[0][3] * b05 - a[3][3] * b01) * det;
+	ret[3][1] = (a[0][2] * b05 - a[2][2] * b02 + a[3][2] * b01) * det;
+	ret[0][2] = (a[0][1] * b10 - a[1][1] * b08 + a[3][1] * b06) * det;
+	ret[1][2] = (a[1][0] * b08 - a[0][0] * b10 - a[3][0] * b06) * det;
+	ret[2][2] = (a[0][3] * b04 - a[1][3] * b02 + a[3][3] * b00) * det;
+	ret[3][2] = (a[1][2] * b02 - a[0][2] * b04 - a[3][2] * b00) * det;
+	ret[0][3] = (a[1][1] * b07 - a[0][1] * b09 - a[2][1] * b06) * det;
+	ret[1][3] = (a[0][0] * b09 - a[1][0] * b07 + a[2][0] * b06) * det;
+	ret[2][3] = (a[1][3] * b01 - a[0][3] * b03 - a[2][3] * b00) * det;
+	ret[3][3] = (a[0][2] * b03 - a[1][2] * b01 + a[2][2] * b00) * det;
+	return ret;
+}
+
+static inline Mat4 mat4Ortho(float left, float right, float bottom, float top, float near, float far) {
+	float lr = 1.f / (left - right);
+	float bt = 1.f / (bottom - top);
+	float nf = 1.f / (near - far);
+
+	Mat4 ret;
+	ret[0][0] = -2.f * lr;
+	ret[1][0] = 0.f;
+	ret[2][0] = 0.f;
+	ret[3][0] = 0.f;
+	ret[0][1] = 0.f;
+	ret[1][1] = -2 * bt;
+	ret[2][1] = 0.f;
+	ret[3][1] = 0.f;
+	ret[0][2] = 0.f;
+	ret[1][2] = 0.f;
+	ret[2][2] = 2 * nf;
+	ret[3][2] = 0.f;
+	ret[0][3] = (left + right) * lr;
+	ret[1][3] = (top + bottom) * bt;
+	ret[2][3] = (far + near) * nf;
+	ret[3][3] = 1.f;
 	return ret;
 }
 
@@ -192,12 +212,37 @@ static inline float vec4Dot(Vec4 a, Vec4 b) {
 	return a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w;
 }
 
+static inline Vec4 vec4Lerp(Vec4 a, Vec4 b, float t) {
+	return a + t * (b - a);
+}
+
 static inline Vec4 vec4TransformMat4(Vec4 a, Mat4 m) {
 	return (Vec4){
 		m[0][0] * a.x + m[0][1] * a.y + m[0][2] * a.z + m[0][3] * a.w,
 		m[1][0] * a.x + m[1][1] * a.y + m[1][2] * a.z + m[1][3] * a.w,
 		m[2][0] * a.x + m[2][1] * a.y + m[2][2] * a.z + m[2][3] * a.w,
 		m[3][0] * a.x + m[3][1] * a.y + m[3][2] * a.z + m[3][3] * a.w
+	};
+}
+
+static inline Quat quatSlerp(Quat a, Quat b, float t) {
+	float cosom = vec4Dot(a, b);
+
+	if (cosom < 0.0) {
+		cosom = -cosom;
+		b = -b;
+	}
+
+	float omega = acosf(cosom);
+	float sinom = sinf(omega);
+	float scale0 = sinf((1.f - t) * omega) / sinom;
+	float scale1 = sinf(t * omega) / sinom;
+
+	return (Quat){
+		scale0 * a.x + scale1 * b.x,
+		scale0 * a.y + scale1 * b.y,
+		scale0 * a.z + scale1 * b.z,
+		scale0 * a.w + scale1 * b.w
 	};
 }
 

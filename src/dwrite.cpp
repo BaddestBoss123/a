@@ -1,120 +1,52 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <dwrite.h>
-#include <intrin.h>
+#include <d2d1.h>
 
-#pragma comment (lib, "gdi32.lib")
-#pragma comment (lib, "user32.lib")
-#pragma comment (lib, "dwrite.lib")
+static IDWriteFactory* dwriteFactory;
+static IDWriteTextFormat* format;
 
-static IDWriteBitmapRenderTarget* target;
-static IDWriteRenderingParams* params;
-static IDWriteFactory* factory;
-static IDWriteGdiInterop* gdi;
-static COLORREF color;
+static ID2D1Factory* d2dFactory;
+static ID2D1DCRenderTarget* renderTarget;
+// static ID2D1StrokeStyle* strokeStyle;
 
-struct MyRender : IDWriteTextRenderer {
-	STDMETHOD(QueryInterface)(REFIID riid, void** ppvObject) {
-		return E_NOTIMPL;
-	}
+extern "C" void drawText(const WCHAR* text, UINT32 length, FLOAT maxWidth, FLOAT maxHeight) {
+	IDWriteTextLayout* textLayout;
+	dwriteFactory->CreateTextLayout(text, length, format, maxWidth, maxHeight, &textLayout);
 
-	STDMETHOD_(ULONG, AddRef)() {
-		return 0;
-	}
+	// ID2D1PathGeometry* pathGeometry;
+	// renderTarget->CreatePathGeometry(&pathGeometry);
 
-	STDMETHOD_(ULONG, Release)() {
-		return 0;
-	}
+	// ID2D1GeometrySink* sink;
+	// pathGeometry->Open(&sink);
+	// textLayout->Draw(NULL, sink, 0, 0);
+	// sink->Close();
+	// sink->Release();
 
-	STDMETHOD(IsPixelSnappingDisabled)(void* ctx, BOOL* isDisabled) {
-		*isDisabled = FALSE;
-		return S_OK;
-	}
+	// renderTarget->DrawGeometry(pathGeometry, brush, 3.f, strokeStyle);
 
-	STDMETHOD(GetCurrentTransform)(void* ctx, DWRITE_MATRIX* transform) {
-		DWRITE_MATRIX identity = {
-			1, 0,
-			0, 1,
-			0, 0
-		};
-		*transform = identity;
-		return S_OK;
-	}
-
-	STDMETHOD(GetPixelsPerDip) (void* ctx, FLOAT* pixelsPerDip) {
-		// TODO: get from current monitor or smth?
-		*pixelsPerDip = 96.0f;
-		return S_OK;
-	}
-
-	STDMETHOD(DrawGlyphRun) (void* ctx, FLOAT baselineOriginX, FLOAT baselineOriginY, DWRITE_MEASURING_MODE measuringMode, const DWRITE_GLYPH_RUN* glyphRun, const DWRITE_GLYPH_RUN_DESCRIPTION* glyphRunDescription, IUnknown* clientDrawingEffect) {
-		return target->DrawGlyphRun(baselineOriginX, baselineOriginY, measuringMode, glyphRun, params, color);
-	}
-
-	STDMETHOD(DrawUnderline) (void* ctx, FLOAT baselineOriginX, FLOAT baselineOriginY, const DWRITE_UNDERLINE* underline, IUnknown* clientDrawingEffect) {
-		return E_NOTIMPL;
-	}
-
-	STDMETHOD(DrawStrikethrough) (void* ctx, FLOAT baselineOriginX, FLOAT baselineOriginY, const DWRITE_STRIKETHROUGH* strikethrough, IUnknown* clientDrawingEffect) {
-		return E_NOTIMPL;
-	}
-
-	STDMETHOD(DrawInlineObject) (void* ctx, FLOAT originX, FLOAT originY, IDWriteInlineObject* inlineObject, BOOL isSideways, BOOL isRightToLeft, IUnknown* clientDrawingEffect) {
-		return E_NOTIMPL;
-	}
-};
+	// pathGeometry->Release();
+	textLayout->Release();
+}
 
 extern "C" void abc(void) {
-	IDWriteTextFormat* format;
+	DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), (IUnknown**)&dwriteFactory);
 
-	const DWORD width = 256;
-	const DWORD height = 256;
+	dwriteFactory->CreateTextFormat(L"Comic Sans MS", NULL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 24.f, L"en-US", &format);
 
-	DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), (IUnknown**)&factory);
-	factory->CreateTextFormat(L"Comic Sans MS", NULL, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, 24.f, L"en-us", &format);
-	factory->CreateRenderingParams(&params);
-	factory->GetGdiInterop(&gdi);
+	D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &d2dFactory);
 
-	gdi->CreateBitmapRenderTarget(NULL, width, height, &target);
+	D2D1_RENDER_TARGET_PROPERTIES renderTargetProperties = { };
+	d2dFactory->CreateDCRenderTarget(&renderTargetProperties, &renderTarget);
 
-	MyRender renderer;
-	color = RGB(0, 255, 0);
-
-	const WCHAR text[] = L"Hello 😂 World!";
-
-	IDWriteTextLayout* layout;
-	factory->CreateTextLayout(text, _countof(text) - 1, format, width, 0, &layout);
-	layout->Draw(NULL, &renderer, 0.f, 0.f);
-	layout->Release();
-
-	// the memory bitmap is always 32-bit top-down
-	HDC dc = target->GetMemoryDC();
-	HBITMAP bitmap = (HBITMAP)GetCurrentObject(dc, OBJ_BITMAP);
-
-	DIBSECTION dib;
-	GetObjectW(bitmap, sizeof(dib), &dib);
-
-	// HANDLE f = CreateFileA("test.bmp", GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-
-	// BITMAPINFOHEADER header = {};
-	// header.biSize = sizeof(header);
-	// header.biWidth = width;
-	// header.biHeight = -height; // vertical flip
-	// header.biPlanes = 1;
-	// header.biBitCount = 32;
-	// header.biCompression = BI_RGB;
-
-	// BITMAPFILEHEADER bmp;
-	// bmp.bfType = 'B' + ('M' << 8);
-	// bmp.bfSize = sizeof(bmp) + sizeof(header) + height * dib.dsBm.bmWidthBytes;
-	// bmp.bfOffBits = sizeof(bmp) + sizeof(header);
-
-	// DWORD written;
-	// WriteFile(f, &bmp, sizeof(bmp), &written, NULL);
-	// WriteFile(f, &header, sizeof(header), &written, NULL);
-	// WriteFile(f, dib.dsBm.bmBits, height * dib.dsBm.bmWidthBytes, &written, NULL);
-
-	// CloseHandle(f);
-
-	format->Release();
+	// D2D1_STROKE_STYLE_PROPERTIES strokeSyleProperties = {
+	// 	.startCap   = D2D1_CAP_STYLE_ROUND,
+	// 	.endCap     = D2D1_CAP_STYLE_ROUND,
+	// 	.dashCap    = D2D1_CAP_STYLE_ROUND,
+	// 	.lineJoin   = D2D1_LINE_JOIN_ROUND,
+	// 	.miterLimit = 3.f,
+	// 	.dashStyle   = D2D1_DASH_STYLE_SOLID,
+	// 	.dashOffset = 0.f
+	// };
+	// renderTarget->CreateStrokeStyle(&strokeSyleProperties, NULL, 0, &strokeStyle);
 }

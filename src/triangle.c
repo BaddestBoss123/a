@@ -5,12 +5,14 @@
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "dwrite.lib")
+#pragma comment(lib, "d2d1.lib")
 
 #define TICKS_PER_SECOND 50
 #define FRAMES_IN_FLIGHT 2
 #define MAX_INSTANCES 0x10000
 #define MAX_PARTICLES 1024
 #define MAX_PORTAL_RECURSION 2
+#define SHADOW_MAP_RESOLUTION 1024
 
 #define OEMRESOURCE
 #define VK_USE_PLATFORM_WIN32_KHR
@@ -26,6 +28,8 @@
 #include <stdbool.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#undef near
+#undef far
 
 #include "scene.h"
 
@@ -33,9 +37,9 @@
 #include "triangle.vert.h"
 #include "triangle.frag.h"
 #include "skybox.frag.h"
+#include "portal.vert.h"
 #include "particle.vert.h"
 #include "particle.frag.h"
-#include "portal.vert.h"
 #include "shadow.vert.h"
 
 INCBIN(shaders_spv, "shaders.spv");
@@ -43,13 +47,24 @@ INCBIN(indices, "indices");
 INCBIN(vertices, "vertices");
 INCBIN(attributes, "attributes");
 
-static uint16_t quadIndices[48];
-
 #define F(fn) static PFN_##fn fn;
 	BEFORE_INSTANCE_FUNCS(F)
 	INSTANCE_FUNCS(F)
 	DEVICE_FUNCS(F)
 #undef F
+
+struct Button {
+	union {
+		float x;
+		float left;
+	};
+	union {
+		float y;
+		float top;
+	};
+	float width;
+	float height;
+};
 
 enum Input {
 	INPUT_START_LEFT    = 0x0001,
@@ -83,12 +98,12 @@ struct Buffer {
 };
 
 enum BufferRanges {
-	BUFFER_RANGE_INDEX_VERTICES     = ALIGN_FORWARD(16 * 1024 * 1024, 256), //ALIGN_FORWARD(((char*)&incbin_indices_end - (char*)&incbin_indices_start), 256),
-	BUFFER_RANGE_INDEX_QUADS        = ALIGN_FORWARD(sizeof(quadIndices), 256),
-	BUFFER_RANGE_VERTEX_POSITIONS   = ALIGN_FORWARD(32 * 1024 * 1024, 256), //ALIGN_FORWARD(((char*)&incbin_vertices_end - (char*)&incbin_vertices_start), 256),
-	BUFFER_RANGE_VERTEX_ATTRIBUTES  = ALIGN_FORWARD(32 * 1024 * 1024, 256), //ALIGN_FORWARD(((char*)&incbin_vertices_end - (char*)&incbin_vertices_start), 256),
-	BUFFER_RANGE_PARTICLES          = ALIGN_FORWARD(MAX_PARTICLES, 256),
-	BUFFER_RANGE_INSTANCES          = ALIGN_FORWARD(MAX_INSTANCES * sizeof(struct Instance), 256),
+	BUFFER_RANGE_INDEX_VERTICES    = ALIGN_FORWARD(16 * 1024 * 1024, 256), //ALIGN_FORWARD(((char*)&incbin_indices_end - (char*)&incbin_indices_start), 256),
+	BUFFER_RANGE_INDEX_QUADS       = ALIGN_FORWARD(6 * 1024, 256), // todo calculate how many
+	BUFFER_RANGE_VERTEX_POSITIONS  = ALIGN_FORWARD(32 * 1024 * 1024, 256), //ALIGN_FORWARD(((char*)&incbin_vertices_end - (char*)&incbin_vertices_start), 256),
+	BUFFER_RANGE_VERTEX_ATTRIBUTES = ALIGN_FORWARD(32 * 1024 * 1024, 256), //ALIGN_FORWARD(((char*)&incbin_vertices_end - (char*)&incbin_vertices_start), 256),
+	BUFFER_RANGE_PARTICLES         = ALIGN_FORWARD(MAX_PARTICLES, 256),
+	BUFFER_RANGE_INSTANCES         = ALIGN_FORWARD(MAX_INSTANCES * sizeof(struct Instance), 256),
 };
 
 enum BufferOffsets {
@@ -152,7 +167,6 @@ static VkPhysicalDeviceFeatures physicalDeviceFeatures;
 static VkPhysicalDeviceProperties physicalDeviceProperties;
 static VkPhysicalDeviceMemoryProperties physicalDeviceMemoryProperties;
 static uint32_t queueFamilyIndex;
-static uint32_t frame;
 static VkRenderPass renderPass;
 static VkRenderPass renderPassBlit;
 static VkDescriptorSetLayout descriptorSetLayout;
@@ -160,42 +174,23 @@ static VkDescriptorPool descriptorPool;
 static VkDescriptorSet descriptorSet;
 static VkSurfaceKHR surface;
 static VkSurfaceFormatKHR surfaceFormat;
+static VkSurfaceCapabilitiesKHR surfaceCapabilities;
 static VkSwapchainKHR swapchain;
 static VkFramebuffer framebuffer;
 static VkFramebuffer swapchainFramebuffers[8];
-static VkRect2D scissor;
 static VkPipelineLayout pipelineLayout;
-static VkQueue queue;
-static VkCommandPool commandPools[FRAMES_IN_FLIGHT];
-static VkCommandBuffer commandBuffers[FRAMES_IN_FLIGHT];
-static VkFence fences[FRAMES_IN_FLIGHT];
-static VkSemaphore imageAcquireSemaphores[FRAMES_IN_FLIGHT];
-static VkSemaphore semaphores[FRAMES_IN_FLIGHT];
-static VkShaderModule blitFrag;
-static VkShaderModule triangleVert;
-static VkShaderModule triangleFrag;
-static VkShaderModule skyboxFrag;
-static VkShaderModule particleVert;
-static VkShaderModule particleFrag;
-static VkShaderModule portalVert;
-static VkShaderModule shadowVert;
-static VkViewport viewport = {
-	.minDepth = 0.0,
-	.maxDepth = 1.0
-};
 
-static bool minimized = false;
+static bool minimized;
 static HMODULE hInstance;
 static LPVOID mainFiber;
-static uint64_t ticksElapsed;
 static uint64_t input;
 
 static struct Entity player;
 static Mat4 projectionMatrix;
 
 static struct Camera camera = {
-	.right = { 1.f, 0.f, 0.f },
-	.up = { 0.f, 1.f, 0.f },
+	.right   = { 1.f, 0.f, 0.f },
+	.up      = { 0.f, 1.f, 0.f },
 	.forward = { 0.f, 0.f, 1.f }
 };
 
@@ -212,8 +207,6 @@ static struct Portal portals[] = {
 		.link        = 0
 	}
 };
-
-static uint32_t instanceIndex;
 
 static uint32_t getMemoryTypeIndex(uint32_t memoryTypeBits, VkMemoryPropertyFlags requiredFlags, VkMemoryPropertyFlags optionalFlags) {
 	for (uint32_t i = 0; i < physicalDeviceMemoryProperties.memoryTypeCount; i++) {
@@ -485,7 +478,6 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 			static uint32_t swapchainImagesCount;
 
 			VkImage swapchainImages[8];
-			VkSurfaceCapabilitiesKHR surfaceCapabilities;
 			vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, &surfaceCapabilities);
 
 			if (surfaceCapabilities.currentExtent.width == 0 || surfaceCapabilities.currentExtent.height == 0) {
@@ -494,12 +486,8 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 			}
 			minimized = false;
 
-			scissor.extent  = surfaceCapabilities.currentExtent;
-			viewport.width  = (float)surfaceCapabilities.currentExtent.width;
-			viewport.height = (float)surfaceCapabilities.currentExtent.height;
-
 			float f                = 1.f / tanf(0.78 / 2.f);
-			projectionMatrix[0][0] = f / (viewport.width / viewport.height);
+			projectionMatrix[0][0] = f / ((float)surfaceCapabilities.currentExtent.width / (float)surfaceCapabilities.currentExtent.height);
 			projectionMatrix[1][1] = -f;
 			projectionMatrix[2][3] = 0.1f;
 			projectionMatrix[3][2] = -1.f;
@@ -510,7 +498,7 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 				.minImageCount    = surfaceCapabilities.minImageCount + 1,
 				.imageFormat      = surfaceFormat.format,
 				.imageColorSpace  = surfaceFormat.colorSpace,
-				.imageExtent      = scissor.extent,
+				.imageExtent      = surfaceCapabilities.currentExtent,
 				.imageArrayLayers = 1,
 				.imageUsage       = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
 				.compositeAlpha   = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
@@ -550,8 +538,8 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 				.imageType    = VK_IMAGE_TYPE_2D,
 				.format       = VK_FORMAT_R16G16B16A16_SFLOAT,
 				.extent       = {
-					.width  = scissor.extent.width,
-					.height = scissor.extent.height,
+					.width  = surfaceCapabilities.currentExtent.width,
+					.height = surfaceCapabilities.currentExtent.height,
 					.depth  = 1
 				},
 				.mipLevels    = 1,
@@ -589,8 +577,8 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 				.imageType    = VK_IMAGE_TYPE_2D,
 				.format       = VK_FORMAT_D24_UNORM_S8_UINT,
 				.extent       = {
-					.width  = scissor.extent.width,
-					.height = scissor.extent.height,
+					.width  = surfaceCapabilities.currentExtent.width,
+					.height = surfaceCapabilities.currentExtent.height,
 					.depth  = 1
 				},
 				.mipLevels    = 1,
@@ -691,8 +679,6 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 			RAWINPUT rawInput;
 			GetRawInputData((HRAWINPUT)lParam, RID_INPUT, &rawInput, &(UINT){ sizeof(RAWINPUT) }, sizeof(RAWINPUTHEADER));
 
-			// todo: deal with looking up/down too far
-
 			float yaw = -0.0005f * (float)rawInput.data.mouse.lLastX;
 			float pitch = -0.0005f * (float)rawInput.data.mouse.lLastY;
 
@@ -706,6 +692,19 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 			camera.right = vec3Normalize(vec3Cross((Vec3){ 0.f, 1.f, 0.f }, camera.forward));
 			camera.up = vec3Normalize(vec3Cross(camera.forward, camera.right));
 
+			// todo: deal with looking up/down too far
+			// float yaw = -0.0005f * (float)rawInput.data.mouse.lLastX;
+			// float pitch = -0.0005f * (float)rawInput.data.mouse.lLastY;
+
+			// Quat yawQuat = quatFromAxisAngle((Vec3){ 0.f, 1.f, 0.f }, yaw);
+			// Quat pitchQuat = quatFromAxisAngle(camera.right, pitch);
+
+			// // Apply yaw rotation first, then pitch rotation
+			// Quat orientation = quatMul(yawQuat, pitchQuat);
+			// camera.forward = vec3TransformQuat((Vec3){ 0.f, 0.f, -1.f }, orientation);
+			// camera.right = vec3TransformQuat((Vec3){ 1.f, 0.f, 0.f }, orientation);
+			// camera.up = vec3Normalize(vec3Cross(camera.forward, camera.right));
+
 			return DefWindowProcW(hWnd, msg, wParam, lParam);
 		} break;
 		case WM_KEYDOWN: {
@@ -713,10 +712,10 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 				case VK_ESCAPE: {
 
 				} break;
-				case VK_LEFT:  case 'A': input |= INPUT_START_LEFT;    break;
 				case VK_UP:    case 'W': input |= INPUT_START_FORWARD; break;
-				case VK_RIGHT: case 'D': input |= INPUT_START_RIGHT;   break;
+				case VK_LEFT:  case 'A': input |= INPUT_START_LEFT;    break;
 				case VK_DOWN:  case 'S': input |= INPUT_START_BACK;    break;
+				case VK_RIGHT: case 'D': input |= INPUT_START_RIGHT;   break;
 				case VK_SPACE:           input |= INPUT_START_UP;      break;
 				case VK_SHIFT: {
 					if (MapVirtualKeyW((lParam & 0x00FF0000) >> 16, MAPVK_VSC_TO_VK_EX) == VK_LSHIFT)
@@ -743,10 +742,10 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 		} break;
 		case WM_KEYUP: {
 			switch (wParam) {
-				case VK_LEFT:  case 'A': input |= INPUT_STOP_LEFT;    break;
 				case VK_UP:    case 'W': input |= INPUT_STOP_FORWARD; break;
-				case VK_RIGHT: case 'D': input |= INPUT_STOP_RIGHT;   break;
+				case VK_LEFT:  case 'A': input |= INPUT_STOP_LEFT;    break;
 				case VK_DOWN:  case 'S': input |= INPUT_STOP_BACK;    break;
+				case VK_RIGHT: case 'D': input |= INPUT_STOP_RIGHT;   break;
 				case VK_SPACE:           input |= INPUT_STOP_UP;      break;
 				case VK_SHIFT: {
 					if (MapVirtualKeyW((lParam & 0x00FF0000) >> 16, MAPVK_VSC_TO_VK_EX) == VK_LSHIFT)
@@ -790,8 +789,15 @@ static void CALLBACK messageFiberProc(LPVOID lpParameter) {
 }
 
 static struct Instance* instances;
+static uint32_t instanceCount;
 
-static inline void drawScene(VkCommandBuffer commandBuffer, struct Camera camera, Vec4 clippingPlane, uint32_t recursionDepth, int32_t skipPortal) {
+static struct {
+	Mat4 model; // todo: adjoint stuff
+	struct Primitive* primitive;
+} draws[MAX_INSTANCES];
+static uint32_t drawCount;
+
+static void drawScene(VkCommandBuffer commandBuffer, struct Camera camera, Vec4 clippingPlane, uint32_t recursionDepth, int32_t skipPortal) {
 	Mat4 viewMatrix;
 	viewMatrix[0][0] = camera.right.x;
 	viewMatrix[1][0] = camera.up.x;
@@ -834,92 +840,40 @@ static inline void drawScene(VkCommandBuffer commandBuffer, struct Camera camera
 			vkCmdSetStencilReference(commandBuffer, VK_STENCIL_FACE_FRONT_AND_BACK, recursionDepth);
 			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.portalStencil);
 			vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Mat4), &portalMVP);
-			vkCmdDraw(commandBuffer, 6, 1, 0, 0);
+			vkCmdDrawIndexed(commandBuffer, 6, 1, BUFFER_OFFSET_INDEX_QUADS / sizeof(uint16_t), 0, 0);
 
 			vkCmdSetStencilReference(commandBuffer, VK_STENCIL_FACE_FRONT_AND_BACK, recursionDepth + 1);
 			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.portalDepthClear);
 			Mat4 squished = portalMVP;
-			squished[2][0] = 0;
-			squished[2][1] = 0;
-			squished[2][2] = 0;
-			squished[2][3] = 0;
+			squished[2][0] = squished[2][1] = squished[2][2] = squished[2][3] = 0;
 			vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Mat4), &squished);
-			vkCmdDraw(commandBuffer, 6, 1, 0, 0);
+			vkCmdDrawIndexed(commandBuffer, 6, 1, BUFFER_OFFSET_INDEX_QUADS / sizeof(uint16_t), 0, 0);
 
-			Vec3 normal = vec3TransformQuat((Vec3){ 0.f, 0.f, 1.f }, link->rotation);
-			float distance = -vec3Dot(link->translation, normal);
-			Vec4 newClippingPlane = { normal.x, normal.y, normal.z, distance };
-
-			Vec3 normalA = vec3TransformQuat((Vec3){ 0.f, 0.f, 1.f }, portal->rotation);
-			if (vec3Dot(normalA, camera.position) > vec3Dot(portal->translation, normalA))
+			Vec3 portalNormal = vec3TransformQuat((Vec3){ 0.f, 0.f, 1.f }, portal->rotation);
+			Vec3 linkNormal = vec3TransformQuat((Vec3){ 0.f, 0.f, 1.f }, link->rotation);
+			Vec4 newClippingPlane = { linkNormal.x, linkNormal.y, linkNormal.z, -vec3Dot(link->translation, linkNormal) };
+			if (vec3Dot(portalNormal, camera.position) > vec3Dot(portal->translation, portalNormal))
 				newClippingPlane *= -1.f;
 
 			drawScene(commandBuffer, portalCamera, newClippingPlane, recursionDepth + 1, portal->link);
 
 			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.portalDepthWrite);
 			vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Mat4), &portalMVP);
-			vkCmdDraw(commandBuffer, 6, 1, 0, 0);
+			vkCmdDrawIndexed(commandBuffer, 6, 1, BUFFER_OFFSET_INDEX_QUADS / sizeof(uint16_t), 0, 0);
 		}
 	}
 
 	vkCmdSetStencilReference(commandBuffer, VK_STENCIL_FACE_FRONT_AND_BACK, recursionDepth);
 	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.triangle);
-	vkCmdBindIndexBuffer(commandBuffer, buffers.index.buffer, BUFFER_OFFSET_INDEX_VERTICES, VK_INDEX_TYPE_UINT16);
 
 	clippingPlane = vec4TransformMat4(clippingPlane, mat4Inverse(__builtin_matrix_transpose(viewProjection)));
 	vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Vec4), &clippingPlane);
 
-	struct Entity* tree[64];
-	uint32_t childIndices[64];
-	// Mat4 transforms[64]; // todo: stack transforms
-
-	struct Scene scene = scenes[0];
-	for (uint32_t i = 0; i < scene.entityCount; i++) {
-		struct Entity* entity = &entities[scene.entities[i]];
-		uint32_t depth = 0;
-
-	todo:
-		if (entity->mesh != MESH_NONE) {
-			for (uint32_t j = 0; j < meshes[entity->mesh].primitiveCount; j++) {
-				struct Primitive* primitive = &meshes[entity->mesh].primitives[j];
-
-				// todo: mesh culling and writing material stuff into instance buffer
-				// also this code here doesn't work for rotated meshes
-
-				Vec3 min = primitive->min;
-				Vec3 max = primitive->max;
-
-				Vec3 scale = entity->scale * (max - min);
-				Vec3 translation = entity->translation + (entity->scale * min);
-				Mat4 modelMatrix = mat4FromRotationTranslationScale(entity->rotation, translation, scale);
-
-				instances[instanceIndex] = (struct Instance){
-					.mvp = viewProjection * modelMatrix,
-					.material = materials[primitive->material]
-				};
-
-				vkCmdDrawIndexed(commandBuffer, primitive->indexCount, 1, primitive->firstIndex, primitive->vertexOffset, instanceIndex++);
-			}
-		}
-
-		if (entity->childCount) {
-			tree[depth] = entity;
-			childIndices[depth] = 0;
-			depth++;
-			entity = entity->children[0];
-		} else {
-			while (depth) {
-				depth--;
-				entity = tree[depth];
-				childIndices[depth]++;
-				if (childIndices[depth] != entity->childCount) {
-					entity = entity->children[childIndices[depth++]];
-					break;
-				}
-			}
-			if (depth)
-				goto todo;
-		}
+	for (uint32_t i = 0; i < drawCount; i++) {
+		// todo: culling
+		instances[instanceCount].mvp = viewProjection * draws[i].model;
+		instances[instanceCount].material = materials[draws[i].primitive->material];
+		vkCmdDrawIndexed(commandBuffer, draws[i].primitive->indexCount, 1, draws[i].primitive->firstIndex, draws[i].primitive->vertexOffset, instanceCount++);
 	}
 
 	vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Mat4), &viewProjection);
@@ -937,17 +891,14 @@ extern void abc(void);
 void WinMainCRTStartup(void) {
 	abc();
 
+	uint64_t ticksElapsed = 0;
+	uint32_t frame = 0;
 	LARGE_INTEGER performanceFrequency;
 	QueryPerformanceFrequency(&performanceFrequency);
 
-	LARGE_INTEGER start;
-	QueryPerformanceCounter(&start);
-
-	hInstance = GetModuleHandleW(NULL);
-	mainFiber = ConvertThreadToFiber(NULL);
-
-	LPVOID messageFiber = CreateFiber(0, messageFiberProc, NULL);
-
+	hInstance               = GetModuleHandleW(NULL);
+	mainFiber               = ConvertThreadToFiber(NULL);
+	LPVOID messageFiber     = CreateFiber(0, messageFiberProc, NULL);
 	WNDCLASSEXW windowClass = {
 		.cbSize        = sizeof(WNDCLASSEXW),
 		.lpfnWndProc   = wndProc,
@@ -975,6 +926,7 @@ void WinMainCRTStartup(void) {
 	IMMDevice* audioDevice;
 	IAudioClient* audioClient;
 	IAudioRenderClient* audioRenderClient;
+	UINT32 bufferSize;
 	WAVEFORMATEX waveFormat    = {
 		.wFormatTag      = WAVE_FORMAT_PCM,
 		.nChannels       = 2,
@@ -983,7 +935,6 @@ void WinMainCRTStartup(void) {
 	};
 	waveFormat.nBlockAlign     = (waveFormat.nChannels * waveFormat.wBitsPerSample) / 8;
 	waveFormat.nAvgBytesPerSec = waveFormat.nSamplesPerSec * waveFormat.nBlockAlign;
-	UINT32 bufferSize;
 
 	CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, &IID_IMMDeviceEnumerator, (void**)&enumerator);
 	enumerator->lpVtbl->GetDefaultAudioEndpoint(enumerator, eRender, eConsole, &audioDevice);
@@ -993,6 +944,12 @@ void WinMainCRTStartup(void) {
 	audioClient->lpVtbl->GetBufferSize(audioClient, &bufferSize);
 	audioClient->lpVtbl->Start(audioClient);
 
+	VkQueue queue;
+	VkCommandPool commandPools[FRAMES_IN_FLIGHT];
+	VkCommandBuffer commandBuffers[FRAMES_IN_FLIGHT];
+	VkFence fences[FRAMES_IN_FLIGHT];
+	VkSemaphore imageAcquireSemaphores[FRAMES_IN_FLIGHT];
+	VkSemaphore semaphores[FRAMES_IN_FLIGHT];
 	vkGetDeviceQueue(device, queueFamilyIndex, 0, &queue);
 	for (uint32_t i = 0; i < FRAMES_IN_FLIGHT; i++) {
 		vkCreateCommandPool(device, &(VkCommandPoolCreateInfo){
@@ -1018,15 +975,6 @@ void WinMainCRTStartup(void) {
 		vkCreateSemaphore(device, &(VkSemaphoreCreateInfo){
 			.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO
 		}, NULL, &semaphores[i]);
-	}
-
-	for (uint32_t i = 0; i < _countof(quadIndices); i += 6) {
-		quadIndices[i + 0] = (4 * (i / 6)) + 0;
-		quadIndices[i + 1] = (4 * (i / 6)) + 1;
-		quadIndices[i + 2] = (4 * (i / 6)) + 2;
-		quadIndices[i + 3] = (4 * (i / 6)) + 2;
-		quadIndices[i + 4] = (4 * (i / 6)) + 1;
-		quadIndices[i + 5] = (4 * (i / 6)) + 3;
 	}
 
 	for (uint32_t i = 0; i < sizeof(buffers) / sizeof(struct Buffer); i++) {
@@ -1060,7 +1008,17 @@ void WinMainCRTStartup(void) {
 	memcpy(buffers.staging.data + stagingBufferDataOffset, &incbin_vertices_start, ((char*)&incbin_vertices_end - (char*)&incbin_vertices_start)); stagingBufferDataOffset += BUFFER_RANGE_VERTEX_POSITIONS;
 	memcpy(buffers.staging.data + stagingBufferDataOffset, &incbin_attributes_start, ((char*)&incbin_attributes_end - (char*)&incbin_attributes_start)); stagingBufferDataOffset += BUFFER_RANGE_VERTEX_ATTRIBUTES;
 	memcpy(buffers.staging.data + stagingBufferDataOffset, &incbin_indices_start, ((char*)&incbin_indices_end - (char*)&incbin_indices_start)); stagingBufferDataOffset += BUFFER_RANGE_INDEX_VERTICES;
-	memcpy(buffers.staging.data + stagingBufferDataOffset, quadIndices, sizeof(quadIndices)); stagingBufferDataOffset += BUFFER_RANGE_INDEX_QUADS;
+
+	uint16_t* quadIndices = (uint16_t*)(buffers.staging.data + stagingBufferDataOffset);
+	stagingBufferDataOffset += BUFFER_RANGE_INDEX_QUADS;
+	for (uint32_t i = 0; i < BUFFER_RANGE_INDEX_QUADS; i += 6) {
+		quadIndices[i + 0] = (4 * (i / 6)) + 0;
+		quadIndices[i + 1] = (4 * (i / 6)) + 1;
+		quadIndices[i + 2] = (4 * (i / 6)) + 2;
+		quadIndices[i + 3] = (4 * (i / 6)) + 2;
+		quadIndices[i + 4] = (4 * (i / 6)) + 1;
+		quadIndices[i + 5] = (4 * (i / 6)) + 3;
+	}
 
 	VkImage images[_countof(ktx2Images)];
 	VkMemoryRequirements imageMemoryRequirements[_countof(ktx2Images)];
@@ -1069,21 +1027,20 @@ void WinMainCRTStartup(void) {
 	VkImageMemoryBarrier imageMemoryBarriers2[_countof(ktx2Images)];
 	VkDeviceMemory imageMemory;
 	VkDeviceSize imageAllocationSize = 0;
-
 	for (uint32_t i = 0; i < _countof(ktx2Images); i++) {
 		vkCreateImage(device, &(VkImageCreateInfo){
-			.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-			.imageType     = VK_IMAGE_TYPE_2D,
-			.format        = ktx2Images[i]->vkFormat,
-			.extent        = {
+			.sType       = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+			.imageType   = VK_IMAGE_TYPE_2D,
+			.format      = ktx2Images[i]->vkFormat,
+			.extent      = {
 				.width  = ktx2Images[i]->pixelWidth,
 				.height = ktx2Images[i]->pixelHeight,
 				.depth  = 1
 			},
-			.mipLevels     = ktx2Images[i]->levelCount,
-			.arrayLayers   = 1,
-			.samples       = VK_SAMPLE_COUNT_1_BIT,
-			.usage         = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+			.mipLevels   = ktx2Images[i]->levelCount,
+			.arrayLayers = 1,
+			.samples     = VK_SAMPLE_COUNT_1_BIT,
+			.usage       = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
 		}, NULL, &images[i]);
 		vkGetImageMemoryRequirements(device, images[i], &imageMemoryRequirements[i]);
 		imageAllocationSize += ALIGN_FORWARD(imageMemoryRequirements[i].size, imageMemoryRequirements[i].alignment);
@@ -1126,7 +1083,6 @@ void WinMainCRTStartup(void) {
 		vkBindImageMemory(device, images[i], imageMemory, imageMemoryOffset);
 		imageMemoryOffset += ALIGN_FORWARD(imageMemoryRequirements[i].size, imageMemoryRequirements[i].alignment);
 
-		VkImageView imageView;
 		vkCreateImageView(device, &(VkImageViewCreateInfo){
 			.sType            = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
 			.image            = images[i],
@@ -1137,12 +1093,8 @@ void WinMainCRTStartup(void) {
 				.levelCount = ktx2Images[i]->levelCount,
 				.layerCount = 1
 			}
-		}, NULL, &imageView);
-
-		ktx2DescriptorImageInfos[i] = (VkDescriptorImageInfo){
-			.imageView   = imageView,
-			.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-		};
+		}, NULL, &ktx2DescriptorImageInfos[i].imageView);
+		ktx2DescriptorImageInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	}
 
 	vkBeginCommandBuffer(commandBuffers[frame], &(VkCommandBufferBeginInfo){
@@ -1185,9 +1137,9 @@ void WinMainCRTStartup(void) {
 					.layerCount = 1
 				},
 				.imageExtent      = {
-					.width = ktx2Images[i]->pixelWidth >> j,
+					.width  = ktx2Images[i]->pixelWidth >> j,
 					.height = ktx2Images[i]->pixelHeight >> j,
-					.depth = 1
+					.depth  = 1
 				}
 			};
 			stagingBufferDataOffset += ALIGN_FORWARD(ktx2Images[i]->levels[j].byteLength, 16);
@@ -1223,8 +1175,8 @@ void WinMainCRTStartup(void) {
 		.imageType   = VK_IMAGE_TYPE_2D,
 		.format      = VK_FORMAT_D16_UNORM,
 		.extent      = {
-			.width  = 1024,
-			.height = 1024,
+			.width  = SHADOW_MAP_RESOLUTION,
+			.height = SHADOW_MAP_RESOLUTION,
 			.depth  = 1
 		},
 		.mipLevels   = 1,
@@ -1294,8 +1246,8 @@ void WinMainCRTStartup(void) {
 		.renderPass      = renderPassShadow,
 		.attachmentCount = 1,
 		.pAttachments    = &shadowImageView,
-		.width           = 1024,
-		.height          = 1024,
+		.width           = SHADOW_MAP_RESOLUTION,
+		.height          = SHADOW_MAP_RESOLUTION,
 		.layers          = 1
 	}, NULL, &shadowFramebuffer);
 
@@ -1312,11 +1264,24 @@ void WinMainCRTStartup(void) {
 	}, NULL, &pipelineLayout);
 
 	VkShaderModule shaderModule;
+	VkShaderModule blitFrag;
+	VkShaderModule triangleVert;
+	VkShaderModule portalVert;
+	VkShaderModule triangleFrag;
+	VkShaderModule skyboxFrag;
+	VkShaderModule particleVert;
+	VkShaderModule particleFrag;
+	VkShaderModule shadowVert;
 	vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
 		.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
 		.pCode    = (uint32_t*)&incbin_shaders_spv_start,
 		.codeSize = (char*)&incbin_shaders_spv_end - (char*)&incbin_shaders_spv_start
 	}, NULL, &shaderModule);
+	vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
+		.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+		.pCode    = portal_vert,
+		.codeSize = sizeof(portal_vert)
+	}, NULL, &portalVert);
 	vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
 		.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
 		.pCode    = blit_frag,
@@ -1347,11 +1312,6 @@ void WinMainCRTStartup(void) {
 		.pCode    = particle_frag,
 		.codeSize = sizeof(particle_frag)
 	}, NULL, &particleFrag);
-	vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
-		.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-		.pCode    = portal_vert,
-		.codeSize = sizeof(portal_vert)
-	}, NULL, &portalVert);
 	vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
 		.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
 		.pCode    = shadow_vert,
@@ -1414,8 +1374,8 @@ void WinMainCRTStartup(void) {
 		{
 			.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 			.stage  = VK_SHADER_STAGE_VERTEX_BIT,
-			.module = portalVert,
-			.pName  = "main"
+			.module = shaderModule,
+			.pName  = "portal_vert"
 		}, {
 			.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 			.stage  = VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -1622,16 +1582,14 @@ void WinMainCRTStartup(void) {
 			.passOp      = VK_STENCIL_OP_KEEP,
 			.depthFailOp = VK_STENCIL_OP_KEEP,
 			.compareOp   = VK_COMPARE_OP_EQUAL,
-			.compareMask = 0xFF,
-			.writeMask   = 0
+			.compareMask = 0xFF
 		},
 		.back              = {
 			.failOp      = VK_STENCIL_OP_KEEP,
 			.passOp      = VK_STENCIL_OP_KEEP,
 			.depthFailOp = VK_STENCIL_OP_KEEP,
 			.compareOp   = VK_COMPARE_OP_EQUAL,
-			.compareMask = 0xFF,
-			.writeMask   = 0
+			.compareMask = 0xFF
 		}
 	};
 	VkPipelineDepthStencilStateCreateInfo depthStencilStateShadow = {
@@ -1649,16 +1607,14 @@ void WinMainCRTStartup(void) {
 			.passOp      = VK_STENCIL_OP_KEEP,
 			.depthFailOp = VK_STENCIL_OP_KEEP,
 			.compareOp   = VK_COMPARE_OP_EQUAL,
-			.compareMask = 0xFF,
-			.writeMask   = 0
+			.compareMask = 0xFF
 		},
 		.back              = {
 			.failOp      = VK_STENCIL_OP_KEEP,
 			.passOp      = VK_STENCIL_OP_KEEP,
 			.depthFailOp = VK_STENCIL_OP_KEEP,
 			.compareOp   = VK_COMPARE_OP_EQUAL,
-			.compareMask = 0xFF,
-			.writeMask   = 0
+			.compareMask = 0xFF
 		}
 	};
 	VkPipelineDepthStencilStateCreateInfo depthStencilStatePortalStencil = {
@@ -1694,16 +1650,14 @@ void WinMainCRTStartup(void) {
 			.passOp      = VK_STENCIL_OP_KEEP,
 			.depthFailOp = VK_STENCIL_OP_KEEP,
 			.compareOp   = VK_COMPARE_OP_EQUAL,
-			.compareMask = 0xFF,
-			.writeMask   = 0
+			.compareMask = 0xFF
 		},
 		.back              = {
 			.failOp      = VK_STENCIL_OP_KEEP,
 			.passOp      = VK_STENCIL_OP_KEEP,
 			.depthFailOp = VK_STENCIL_OP_KEEP,
 			.compareOp   = VK_COMPARE_OP_EQUAL,
-			.compareMask = 0xFF,
-			.writeMask   = 0
+			.compareMask = 0xFF
 		}
 	};
 	VkPipelineDepthStencilStateCreateInfo depthStencilStatePortalDepth = {
@@ -1739,9 +1693,7 @@ void WinMainCRTStartup(void) {
 	VkPipelineColorBlendStateCreateInfo colorBlendStatePortal = {
 		.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
 		.attachmentCount = 1,
-		.pAttachments    = &(VkPipelineColorBlendAttachmentState){
-			.colorWriteMask = 0
-		}
+		.pAttachments    = &(VkPipelineColorBlendAttachmentState){ }
 	};
 	VkPipelineDynamicStateCreateInfo dynamicState = {
 		.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
@@ -1877,6 +1829,10 @@ void WinMainCRTStartup(void) {
 		}
 	}, NULL, (VkPipeline*)&pipelines);
 
+	Vec3 previousPlayerTranslation = player.translation;
+
+	LARGE_INTEGER start;
+	QueryPerformanceCounter(&start);
 	for (;;) {
 		SwitchToFiber(messageFiber);
 
@@ -1895,13 +1851,22 @@ void WinMainCRTStartup(void) {
 			MessageBoxA(NULL, ABC, NULL, MB_OK);
 		}
 
+		float interpolationFactor;
+		#define extrapolationFactor interpolationFactor
+
 		while (({
 			LARGE_INTEGER now;
 			QueryPerformanceCounter(&now);
+			uint64_t delta = now.QuadPart - start.QuadPart;
+			uint64_t targetTicksElapsed = (delta * TICKS_PER_SECOND) / performanceFrequency.QuadPart;
 
-			uint64_t targetTicksElapsed = ((now.QuadPart - start.QuadPart) * TICKS_PER_SECOND) / performanceFrequency.QuadPart;
+			uint64_t countsPerTick = performanceFrequency.QuadPart / TICKS_PER_SECOND;
+			interpolationFactor = ((float)delta / countsPerTick) - targetTicksElapsed;
+
 			ticksElapsed < targetTicksElapsed;
 		})) {
+			previousPlayerTranslation = player.translation;
+
 			Vec3 forwardMovement  = { 0 };
 			Vec3 sidewaysMovement = { 0 };
 
@@ -1944,13 +1909,62 @@ void WinMainCRTStartup(void) {
 			continue;
 		}
 
+		// Vec3 sunDirection = vec3Normalize((Vec3){ 0.36f, 0.8f, 0.48f });
+		Mat4 ortho        = mat4Ortho(-50.f, 50.f, -50.f, 50.f, 1.f, 100.f);
+
+		camera.position     = vec3Lerp(previousPlayerTranslation, player.translation, interpolationFactor);
 		portals[0].rotation = quatRotateY(portals[0].rotation, 0.001);
 		portals[1].rotation = quatRotateY(portals[1].rotation, -0.001);
 
-		instanceIndex = 0;
+		drawCount     = 0;
+		instanceCount = 0;
 		instances     = buffers.instance.data + BUFFER_OFFSET_INSTANCES + (frame * BUFFER_RANGE_INSTANCES);
 
-		camera.position = player.translation; // todo: inter/extrapolate between frames
+		struct Entity* tree[64];
+		uint32_t childIndices[64];
+		// Mat4 transforms[64]; // todo: stack transforms
+
+		struct Scene scene = scenes[0];
+		for (uint32_t i = 0; i < scene.entityCount; i++) {
+			struct Entity* entity = &entities[scene.entities[i]];
+			uint32_t depth = 0;
+
+		todo:
+			if (entity->mesh != MESH_NONE) {
+				for (uint32_t j = 0; j < meshes[entity->mesh].primitiveCount; j++) {
+					struct Primitive* primitive = &meshes[entity->mesh].primitives[j];
+
+					// todo: this code here doesn't work for rotated meshes idk why
+
+					Vec3 min = primitive->min;
+					Vec3 max = primitive->max;
+
+					Vec3 scale = entity->scale * (max - min);
+					Vec3 translation = entity->translation + (entity->scale * min);
+					draws[drawCount].model = mat4FromRotationTranslationScale(entity->rotation, translation, scale);
+					draws[drawCount++].primitive = primitive;
+				}
+			}
+
+			if (entity->childCount) {
+				tree[depth] = entity;
+				childIndices[depth] = 0;
+				depth++;
+				entity = entity->children[0];
+			} else {
+				while (depth) {
+					depth--;
+					entity = tree[depth];
+					childIndices[depth]++;
+					if (childIndices[depth] != entity->childCount) {
+						entity = entity->children[childIndices[depth++]];
+						break;
+					}
+				}
+				if (depth)
+					goto todo;
+			}
+		}
 
 		uint32_t imageIndex;
 		vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, imageAcquireSemaphores[frame], VK_NULL_HANDLE, &imageIndex);
@@ -1963,6 +1977,7 @@ void WinMainCRTStartup(void) {
 		});
 
 		vkCmdBindDescriptorSets(commandBuffers[frame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 0, NULL);
+		vkCmdBindIndexBuffer(commandBuffers[frame], buffers.index.buffer, 0, VK_INDEX_TYPE_UINT16);
 		vkCmdBindVertexBuffers(commandBuffers[frame], 0, 4, (VkBuffer[]){
 			buffers.vertex.buffer,
 			buffers.vertex.buffer,
@@ -1975,25 +1990,41 @@ void WinMainCRTStartup(void) {
 			BUFFER_OFFSET_PARTICLES + (frame * BUFFER_RANGE_PARTICLES)
 		});
 
+		VkRect2D scissor = {
+			.extent.width  = SHADOW_MAP_RESOLUTION,
+			.extent.height = SHADOW_MAP_RESOLUTION
+		};
+		VkViewport viewport = {
+			.width    = SHADOW_MAP_RESOLUTION,
+			.height   = SHADOW_MAP_RESOLUTION,
+			.minDepth = 0.f,
+			.maxDepth = 1.f
+		};
 		vkCmdSetScissor(commandBuffers[frame], 0, 1, &scissor);
 		vkCmdSetViewport(commandBuffers[frame], 0, 1, &viewport);
-
 		vkCmdBeginRenderPass(commandBuffers[frame], &(VkRenderPassBeginInfo){
 			.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
 			.renderPass      = renderPassShadow,
 			.framebuffer     = shadowFramebuffer,
-			.renderArea      = {
-				.extent = {
-					.width  = 1024,
-					.height = 1024
-				}
-			},
+			.renderArea      = scissor,
 			.clearValueCount = 1,
 			.pClearValues    = &(VkClearValue){ { 0 } }
 		}, VK_SUBPASS_CONTENTS_INLINE);
-		// draw all triangles
+		// vkCmdBindPipeline(commandBuffers[frame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.shadow);
+		// for (uint32_t i = 0; i < drawCount; i++) {
+		// 	// todo: culling
+
+		// 	instances[instanceCount].mvp = ortho * draws[i].model;
+		// 	instances[instanceCount].material = materials[draws[i].primitive->material];
+		// 	vkCmdDrawIndexed(commandBuffers[frame], draws[i].primitive->indexCount, 1, draws[i].primitive->firstIndex, draws[i].primitive->vertexOffset, instanceCount++);
+		// }
 		vkCmdEndRenderPass(commandBuffers[frame]);
 
+		scissor.extent  = surfaceCapabilities.currentExtent;
+		viewport.width  = (float)surfaceCapabilities.currentExtent.width;
+		viewport.height = (float)surfaceCapabilities.currentExtent.height;
+		vkCmdSetScissor(commandBuffers[frame], 0, 1, &scissor);
+		vkCmdSetViewport(commandBuffers[frame], 0, 1, &viewport);
 		vkCmdBeginRenderPass(commandBuffers[frame], &(VkRenderPassBeginInfo){
 			.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
 			.renderPass      = renderPass,
@@ -2002,9 +2033,7 @@ void WinMainCRTStartup(void) {
 			.clearValueCount = 2,
 			.pClearValues    = (VkClearValue[]){ { 0 }, { 0 } }
 		}, VK_SUBPASS_CONTENTS_INLINE);
-
 		drawScene(commandBuffers[frame], camera, (Vec4){ 0.f, 0.f, 0.f, 0.f }, 0, -1);
-
 		vkCmdEndRenderPass(commandBuffers[frame]);
 
 		vkCmdBeginRenderPass(commandBuffers[frame], &(VkRenderPassBeginInfo){
@@ -2013,10 +2042,8 @@ void WinMainCRTStartup(void) {
 			.framebuffer     = swapchainFramebuffers[imageIndex],
 			.renderArea      = scissor,
 		}, VK_SUBPASS_CONTENTS_INLINE);
-
 		vkCmdBindPipeline(commandBuffers[frame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.blit);
 		vkCmdDraw(commandBuffers[frame], 3, 1, 0, 0);
-
 		vkCmdEndRenderPass(commandBuffers[frame]);
 		vkEndCommandBuffer(commandBuffers[frame]);
 		vkQueueSubmit(queue, 1, &(VkSubmitInfo){
