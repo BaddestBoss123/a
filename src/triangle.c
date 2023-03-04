@@ -314,7 +314,7 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 					.textureCompressionBC = physicalDeviceFeatures.textureCompressionBC,
 					.depthClamp           = physicalDeviceFeatures.depthClamp,
 					.shaderClipDistance   = physicalDeviceFeatures.shaderClipDistance,
-					.samplerAnisotropy    = physicalDeviceFeatures.samplerAnisotropy
+					// .samplerAnisotropy    = physicalDeviceFeatures.samplerAnisotropy
 				}
 			}, NULL, &device);
 
@@ -413,8 +413,8 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 				.mipmapMode       = VK_SAMPLER_MIPMAP_MODE_LINEAR,
 				.addressModeU     = VK_SAMPLER_ADDRESS_MODE_REPEAT,
 				.addressModeV     = VK_SAMPLER_ADDRESS_MODE_REPEAT,
-				.anisotropyEnable = physicalDeviceFeatures.samplerAnisotropy,
-				.maxAnisotropy    = 1.f,
+				// .anisotropyEnable = physicalDeviceFeatures.samplerAnisotropy,
+				// .maxAnisotropy    = 1.f,
 				.minLod           = 0.f,
 				.maxLod           = VK_LOD_CLAMP_NONE
 			}, NULL, &sampler);
@@ -692,19 +692,6 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 			camera.right = vec3Normalize(vec3Cross((Vec3){ 0.f, 1.f, 0.f }, camera.forward));
 			camera.up = vec3Normalize(vec3Cross(camera.forward, camera.right));
 
-			// todo: deal with looking up/down too far
-			// float yaw = -0.0005f * (float)rawInput.data.mouse.lLastX;
-			// float pitch = -0.0005f * (float)rawInput.data.mouse.lLastY;
-
-			// Quat yawQuat = quatFromAxisAngle((Vec3){ 0.f, 1.f, 0.f }, yaw);
-			// Quat pitchQuat = quatFromAxisAngle(camera.right, pitch);
-
-			// // Apply yaw rotation first, then pitch rotation
-			// Quat orientation = quatMul(yawQuat, pitchQuat);
-			// camera.forward = vec3TransformQuat((Vec3){ 0.f, 0.f, -1.f }, orientation);
-			// camera.right = vec3TransformQuat((Vec3){ 1.f, 0.f, 0.f }, orientation);
-			// camera.up = vec3Normalize(vec3Cross(camera.forward, camera.right));
-
 			return DefWindowProcW(hWnd, msg, wParam, lParam);
 		} break;
 		case WM_KEYDOWN: {
@@ -914,11 +901,14 @@ void WinMainCRTStartup(void) {
 	SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
 	ioctlsocket(sock, FIONBIO, &(u_long){ 1 });
 
-	(void)bind(sock, (struct sockaddr*)&(struct sockaddr_in){
-		.sin_family      = AF_INET,
-		.sin_addr.s_addr = htonl(INADDR_ANY),
-		.sin_port        = htons(9000)
-	}, sizeof(struct sockaddr_in));
+	struct sockaddr_in servaddr = {
+		.sin_family = AF_INET,
+		.sin_port = htons(8080)
+	};
+	inet_pton(AF_INET, "78.141.219.44", &servaddr.sin_addr);
+
+	char* message = "This is a HUUUUGE ass string that should be longer than 128 characters and therefore not fit in your buffer but oh well we'll see what happens loloolololool";
+    sendto(sock, message, strlen(message), 0, (struct sockaddr*)&servaddr, sizeof(struct sockaddr_in));
 
 	CoInitializeEx(NULL, COINIT_SPEED_OVER_MEMORY);
 
@@ -928,10 +918,10 @@ void WinMainCRTStartup(void) {
 	IAudioRenderClient* audioRenderClient;
 	UINT32 bufferSize;
 	WAVEFORMATEX waveFormat    = {
-		.wFormatTag      = WAVE_FORMAT_PCM,
-		.nChannels       = 2,
-		.nSamplesPerSec  = 44100,
-		.wBitsPerSample  = sizeof(uint16_t) * 8,
+		.wFormatTag     = WAVE_FORMAT_PCM,
+		.nChannels      = 2,
+		.nSamplesPerSec = 44100,
+		.wBitsPerSample = sizeof(uint16_t) * 8,
 	};
 	waveFormat.nBlockAlign     = (waveFormat.nChannels * waveFormat.wBitsPerSample) / 8;
 	waveFormat.nAvgBytesPerSec = waveFormat.nSamplesPerSec * waveFormat.nBlockAlign;
