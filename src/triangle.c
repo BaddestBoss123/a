@@ -82,19 +82,6 @@ struct Button {
 	float height;
 };
 
-struct Transform {
-	Vec3 translation;
-	Quat rotation;
-	Vec3 scale;
-};
-
-struct Entity {
-	struct Transform transform;
-	float speed;
-	enum MeshID mesh;
-	int32_t next;
-};
-
 struct Portal {
 	struct Transform transform;
 	uint32_t link;
@@ -209,18 +196,14 @@ static bool minimized;
 static HMODULE hInstance;
 static LPVOID mainFiber;
 static uint64_t input;
-static uint16_t clientID;
-static uint16_t entityID;
+static int32_t clientID = -1;
+static int32_t entityID = -1;
 
 static Mat4 projectionMatrix;
 
-static struct {
-	int32_t head;
-	struct Entity* data;
-} entities = {
-	.head = -1,
-	.data = (struct Entity[UINT16_MAX]){ }
-};
+static struct Entity entityMap[UINT16_MAX];
+static uint16_t entities[UINT16_MAX];
+static uint16_t entityCount;
 
 static struct Camera camera = {
 	.right = { 1.f, 0.f, 0.f },
@@ -1852,12 +1835,12 @@ void WinMainCRTStartup(void) {
 	audioClient->lpVtbl->GetBufferSize(audioClient, &bufferSize);
 	audioClient->lpVtbl->Start(audioClient);
 
-	Vec3 previousPlayerTranslation = entities.data[entityID].transform.translation; // todo: ugly
-	entities.data[entityID].transform = (struct Transform){
-		.translation = { 0.f, 0.f, 0.f },
-		.rotation = { 0.f, 0.f, 0.f, 1.f },
-		.scale = { 1.f, 1.f, 1.f }
-	};
+	Vec3 previousPlayerTranslation = { 0 }; // TODO: ugly
+
+	sendto(sock, (char*)&(struct ClientMessageID){
+		.clientID = -1,
+		.header = CLIENT_MESSAGE_ID
+	}, sizeof(struct ClientMessageID), 0, (struct sockaddr*)&servaddr, sizeof(struct sockaddr_in));
 
 	LARGE_INTEGER start;
 	QueryPerformanceCounter(&start);
@@ -1878,36 +1861,39 @@ void WinMainCRTStartup(void) {
 					struct ServerMessageUpdate* message = (struct ServerMessageUpdate*)buffer;
 
 					for (uint32_t i = 0; i < message->entityCount; i++) {
-						struct ServerEntity* e = &message->entities[i];
+						struct ServerEntity* entity = &message->entities[i];
 
-						if (e->flags & ENTITY_CREATE) {
-							entities.data[e->entityID] = (struct Entity){
+						if (entity->flags & ENTITY_CREATED) {
+							OutputDebugStringA("creating entity\n");
+							entityMap[entity->entityID] = (struct Entity){
 								.transform = {
-									.translation = { e->x, e->y, e->z },
-									.rotation = { e->rx, e->ry, e->rz, e->rw },
-									.scale = { e->sx, e->sy, e->sz }
+									.translation = { entity->x, entity->y, entity->z },
+									.rotation = { entity->rx, entity->ry, entity->rz, entity->rw },
+									.scale = { entity->sx, entity->sy, entity->sz }
 								},
-								.speed = e->speed,
-								.mesh = e->mesh,
-								.next = entities.head
+								.speed = entity->speed,
+								.mesh = entity->entityID == entityID ? MESH_NONE : entity->mesh
 							};
-							entities.head = e->entityID;
+							entities[entityCount++] = entity->entityID;
 
-							if (e->entityID == entityID)
-								entities.data[e->entityID].mesh = MESH_NONE;
-						} else if (e->flags & ENTITY_DESTROY) {
-
+						} else if (entity->flags & ENTITY_DESTROYED) {
+							OutputDebugStringA("deleting entity\n");
+							// TODO: get rid of this loop
+							for (uint32_t i = 0; i < entityCount; i++) {
+								if (entities[i] == entity->entityID) {
+									entities[i] = entities[--entityCount];
+									break;
+								}
+							}
 						} else {
-							entities.data[e->entityID].speed = e->speed;
-							if (e->entityID == entityID)
+							entityMap[entity->entityID].speed = entity->speed;
+							if (entity->entityID == entityID)
 								continue;
 
-							entities.data[e->entityID].transform = (struct Transform){
-								.translation = { e->x, e->y, e->z },
-								.rotation = { e->rx, e->ry, e->rz, e->rw },
-								.scale = { e->sx, e->sy, e->sz }
-							};
-							entities.data[e->entityID].mesh = e->mesh;
+							entityMap[entity->entityID].transform.translation = (Vec3){ entity->x, entity->y, entity->z };
+							entityMap[entity->entityID].transform.rotation = (Quat){ entity->rx, entity->ry, entity->rz, entity->rw };
+							entityMap[entity->entityID].transform.scale = (Vec3){ entity->sx, entity->sy, entity->sz };
+							entityMap[entity->entityID].mesh = entity->mesh;
 						}
 					}
 				} break;
@@ -1926,56 +1912,58 @@ void WinMainCRTStartup(void) {
 			interpolationFactor = (float)(countsElapsed - (targetTicksElapsed * countsPerTick)) / countsPerTick;
 			ticksElapsed < targetTicksElapsed;
 		})) {
-			previousPlayerTranslation = entities.data[entityID].transform.translation;
+			if (entityID != -1) {
+				previousPlayerTranslation = entityMap[entityID].transform.translation;
 
-			Vec3 forwardMovement = { 0 };
-			Vec3 sidewaysMovement = { 0 };
+				Vec3 forwardMovement = { 0 };
+				Vec3 sidewaysMovement = { 0 };
 
-			if ((input & INPUT_START_FORWARD) && !(input & INPUT_START_BACK))
-				forwardMovement = vec3Normalize(-(Vec3){ camera.forward.x, 0.f, camera.forward.z });
-			else if ((input & INPUT_START_BACK) && !(input & INPUT_START_FORWARD))
-				forwardMovement = vec3Normalize((Vec3){ camera.forward.x, 0.f, camera.forward.z });
+				if ((input & INPUT_START_FORWARD) && !(input & INPUT_START_BACK))
+					forwardMovement = vec3Normalize(-(Vec3){ camera.forward.x, 0.f, camera.forward.z });
+				else if ((input & INPUT_START_BACK) && !(input & INPUT_START_FORWARD))
+					forwardMovement = vec3Normalize((Vec3){ camera.forward.x, 0.f, camera.forward.z });
 
-			if ((input & INPUT_START_LEFT) && !(input & INPUT_START_RIGHT))
-				sidewaysMovement = vec3Normalize(-(Vec3){ camera.right.x, 0.f, camera.right.z });
-			else if ((input & INPUT_START_RIGHT) && !(input & INPUT_START_LEFT))
-				sidewaysMovement = vec3Normalize((Vec3){ camera.right.x, 0.f, camera.right.z });
+				if ((input & INPUT_START_LEFT) && !(input & INPUT_START_RIGHT))
+					sidewaysMovement = vec3Normalize(-(Vec3){ camera.right.x, 0.f, camera.right.z });
+				else if ((input & INPUT_START_RIGHT) && !(input & INPUT_START_LEFT))
+					sidewaysMovement = vec3Normalize((Vec3){ camera.right.x, 0.f, camera.right.z });
 
-			if ((input & INPUT_START_UP) && !(input & INPUT_START_DOWN))
-				entities.data[entityID].transform.translation.y += 0.09f;
-			else if ((input & INPUT_START_DOWN) && !(input & INPUT_START_UP))
-				entities.data[entityID].transform.translation.y -= 0.09f;
+				if ((input & INPUT_START_UP) && !(input & INPUT_START_DOWN))
+					entityMap[entityID].transform.translation.y += 0.09f;
+				else if ((input & INPUT_START_DOWN) && !(input & INPUT_START_UP))
+					entityMap[entityID].transform.translation.y -= 0.09f;
 
-			if (input & INPUT_STOP_FORWARD) input &= ~(INPUT_START_FORWARD | INPUT_STOP_FORWARD);
-			if (input & INPUT_STOP_BACK) input &= ~(INPUT_START_BACK | INPUT_STOP_BACK);
-			if (input & INPUT_STOP_LEFT) input &= ~(INPUT_START_LEFT | INPUT_STOP_LEFT);
-			if (input & INPUT_STOP_RIGHT) input &= ~(INPUT_START_RIGHT | INPUT_STOP_RIGHT);
-			if (input & INPUT_STOP_DOWN) input &= ~(INPUT_START_DOWN | INPUT_STOP_DOWN);
-			if (input & INPUT_STOP_UP) input &= ~(INPUT_START_UP | INPUT_STOP_UP);
+				if (input & INPUT_STOP_FORWARD) input &= ~(INPUT_START_FORWARD | INPUT_STOP_FORWARD);
+				if (input & INPUT_STOP_BACK) input &= ~(INPUT_START_BACK | INPUT_STOP_BACK);
+				if (input & INPUT_STOP_LEFT) input &= ~(INPUT_START_LEFT | INPUT_STOP_LEFT);
+				if (input & INPUT_STOP_RIGHT) input &= ~(INPUT_START_RIGHT | INPUT_STOP_RIGHT);
+				if (input & INPUT_STOP_DOWN) input &= ~(INPUT_START_DOWN | INPUT_STOP_DOWN);
+				if (input & INPUT_STOP_UP) input &= ~(INPUT_START_UP | INPUT_STOP_UP);
 
-			entities.data[entityID].transform.translation += entities.data[entityID].speed * forwardMovement;
-			entities.data[entityID].transform.translation += entities.data[entityID].speed * sidewaysMovement;
+				entityMap[entityID].transform.translation += entityMap[entityID].speed * forwardMovement;
+				entityMap[entityID].transform.translation += entityMap[entityID].speed * sidewaysMovement;
 
-			for (uint32_t i = 0; i < _countof(portals); i++) {
-				// todo: portal travel
-				// Portal* portal = &portals[i];
-				// Portal* link = &portals[portal->link];
+				for (uint32_t i = 0; i < _countof(portals); i++) {
+					// todo: portal travel
+					// Portal* portal = &portals[i];
+					// Portal* link = &portals[portal->link];
+				}
+
+				sendto(sock, (char*)&(struct ClientMessageUpdate){
+					.clientID = clientID,
+					.header = CLIENT_MESSAGE_UPDATE,
+					.x = entityMap[entityID].transform.translation.x,
+					.y = entityMap[entityID].transform.translation.y,
+					.z = entityMap[entityID].transform.translation.z,
+					.rx = entityMap[entityID].transform.rotation.x,
+					.ry = entityMap[entityID].transform.rotation.y,
+					.rz = entityMap[entityID].transform.rotation.z,
+					.rw = entityMap[entityID].transform.rotation.w,
+					.sx = entityMap[entityID].transform.scale.x,
+					.sy = entityMap[entityID].transform.scale.y,
+					.sz = entityMap[entityID].transform.scale.z
+				}, sizeof(struct ClientMessageUpdate), 0, (struct sockaddr*)&servaddr, sizeof(struct sockaddr_in));
 			}
-
-			sendto(sock, (char*)&(struct ClientMessageUpdate){
-				.clientID = clientID,
-				.header = CLIENT_MESSAGE_UPDATE,
-				.x = entities.data[entityID].transform.translation.x,
-				.y = entities.data[entityID].transform.translation.y,
-				.z = entities.data[entityID].transform.translation.z,
-				.rx = entities.data[entityID].transform.rotation.x,
-				.ry = entities.data[entityID].transform.rotation.y,
-				.rz = entities.data[entityID].transform.rotation.z,
-				.rw = entities.data[entityID].transform.rotation.w,
-				.sx = entities.data[entityID].transform.scale.x,
-				.sy = entities.data[entityID].transform.scale.y,
-				.sz = entities.data[entityID].transform.scale.z
-			}, sizeof(struct ClientMessageUpdate), 0, (struct sockaddr*)&servaddr, sizeof(struct sockaddr_in));
 
 			ticksElapsed++;
 		}
@@ -1988,7 +1976,7 @@ void WinMainCRTStartup(void) {
 		// Vec3 sunDirection = vec3Normalize((Vec3){ 0.36f, 0.8f, 0.48f });
 		// Mat4 ortho = mat4Ortho(-50.f, 50.f, -50.f, 50.f, 1.f, 100.f);
 
-		camera.position = vec3Lerp(previousPlayerTranslation, entities.data[entityID].transform.translation, interpolationFactor);
+		camera.position = vec3Lerp(previousPlayerTranslation, entityMap[entityID].transform.translation, interpolationFactor);
 		portals[0].transform.rotation = quatRotateY(portals[0].transform.rotation, 0.001);
 		portals[1].transform.rotation = quatRotateY(portals[1].transform.rotation, -0.001);
 
@@ -2000,9 +1988,8 @@ void WinMainCRTStartup(void) {
 		// uint32_t childIndices[64];
 		// Mat4 transforms[64]; // todo: stack transforms
 
-		int32_t idx = entities.head;
-		while (idx != -1) {
-			struct Entity* entity = &entities.data[idx];
+		for (uint32_t i = 0; i < entityCount; i++) {
+			struct Entity* entity = &entityMap[entities[i]];
 			// uint32_t depth = 0;
 
 		// todo:
@@ -2040,8 +2027,6 @@ void WinMainCRTStartup(void) {
 			// 	if (depth)
 			// 		goto todo;
 			// }
-
-			idx = entity->next;
 		}
 
 		uint32_t imageIndex;

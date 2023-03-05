@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <time.h>
 
+#define SERVER
 #include "protocol.h"
 #include "freelist.h"
 
@@ -20,22 +21,7 @@ struct Client {
 	uint16_t idleTime;
 
 	int32_t next;
-	int32_t entity;
-};
-
-struct Transform {
-	Vec3 translation;
-	Quat rotation;
-	Vec3 scale;
-};
-
-struct Entity {
-	int32_t clientID;
-	uint16_t flags;
-	int32_t next;
-	float speed;
-	enum MeshID mesh;
-	struct Transform transform;
+	int32_t entityID;
 };
 
 static struct {
@@ -63,10 +49,31 @@ static struct {
 static char scratchBuffer[4 * 1024 * 1024];
 static uint64_t ticksElapsed;
 
+static inline struct ServerEntity serializeEntity(int32_t idx, uint16_t flags) {
+	struct Entity* e = &entities.data[idx];
+
+	return (struct ServerEntity){
+		.entityID = idx,
+		.flags = e->flags | flags,
+		.mesh = e->mesh,
+		.x = e->transform.translation.x,
+		.y = e->transform.translation.y,
+		.z = e->transform.translation.z,
+		.rx = e->transform.rotation.x,
+		.ry = e->transform.rotation.y,
+		.rz = e->transform.rotation.z,
+		.rw = e->transform.rotation.w,
+		.sx = e->transform.scale.x,
+		.sy = e->transform.scale.y,
+		.sz = e->transform.scale.z,
+		.speed = e->speed
+	};
+}
+
 int main() {
 	int32_t entityID = FREE_LIST_INSERT(entities, ((struct Entity){
 		.clientID = -1,
-		.flags = ENTITY_CREATE,
+		.flags = ENTITY_CREATED,
 		.transform = {
 			.translation = { 0.f, 0.f, 0.f },
 			.rotation = { 0.f, 0.f, 0.f, 1.f },
@@ -116,7 +123,7 @@ int main() {
 						.port = port
 					}));
 					memcpy(&clients.data[clientID].ip, ip, sizeof(ip));
-					printf("new connection id %i: %s:%i\n", clientID, ip, port);
+					printf("new connection id %i: %s:%i\n", clientID, ip, port); fflush(stdout);
 
 					struct ServerMessageUpdate* message = (struct ServerMessageUpdate*)scratchBuffer;
 					message->header = SERVER_MESSAGE_UPDATE;
@@ -125,30 +132,15 @@ int main() {
 					idx = entities.head;
 					while (idx != -1) {
 						struct Entity* e = &entities.data[idx];
-						message->entities[message->entityCount++] = (struct ServerEntity){
-							.entityID = idx,
-							.flags = e->flags | ENTITY_CREATE,
-							.mesh = e->mesh,
-							.x = e->transform.translation.x,
-							.y = e->transform.translation.y,
-							.z = e->transform.translation.z,
-							.rx = e->transform.rotation.x,
-							.ry = e->transform.rotation.y,
-							.rz = e->transform.rotation.z,
-							.rw = e->transform.rotation.w,
-							.sx = e->transform.scale.x,
-							.sy = e->transform.scale.y,
-							.sz = e->transform.scale.z,
-							.speed = e->speed
-						};
+						message->entities[message->entityCount++] = serializeEntity(idx, ENTITY_CREATED);
 
 						idx = e->next;
 					}
 					sendto(sock, scratchBuffer, offsetof(struct ServerMessageUpdate, entities) + message->entityCount * sizeof(struct ServerEntity), MSG_CONFIRM, (struct sockaddr*)&address, sizeof(struct sockaddr_in));
 
-					entityID = clients.data[clientID].entity = FREE_LIST_INSERT(entities, ((struct Entity){
+					entityID = clients.data[clientID].entityID = FREE_LIST_INSERT(entities, ((struct Entity){
 						.clientID = clientID,
-						.flags = ENTITY_CREATE,
+						.flags = ENTITY_CREATED,
 						.transform = {
 							.translation = { 0.f, 0.f, 0.f },
 							.rotation = { 0.f, 0.f, 0.f, 1.f },
@@ -168,12 +160,11 @@ int main() {
 
 			clients.data[clientID].idleTime = 0;
 			switch (header) {
+				case CLIENT_MESSAGE_ID: break;
 				case CLIENT_MESSAGE_UPDATE: {
 					struct ClientMessageUpdate* message = (struct ClientMessageUpdate*)buffer;
+					struct Entity* entity = &entities.data[clients.data[clientID].entityID];
 
-					int32_t entityIndex = clients.data[clientID].entity;
-
-					struct Entity* entity = &entities.data[entityIndex];
 					entity->transform.translation = (Vec3){ message->x, message->y, message->z };
 					entity->transform.rotation = (Quat){ message->rx, message->ry, message->rz, message->rw };
 					entity->transform.scale = (Vec3){ message->sx, message->sy, message->sz };
@@ -195,39 +186,37 @@ int main() {
 			message->header = SERVER_MESSAGE_UPDATE;
 			message->entityCount = 0;
 
-			int32_t idx = entities.head;
-			while (idx != -1) {
-				struct Entity* e = &entities.data[idx];
-				message->entities[message->entityCount++] = (struct ServerEntity){
-					.entityID = idx,
-					.flags = e->flags,
-					.mesh = e->mesh,
-					.x = e->transform.translation.x,
-					.y = e->transform.translation.y,
-					.z = e->transform.translation.z,
-					.rx = e->transform.rotation.x,
-					.ry = e->transform.rotation.y,
-					.rz = e->transform.rotation.z,
-					.rw = e->transform.rotation.w,
-					.sx = e->transform.scale.x,
-					.sy = e->transform.scale.y,
-					.sz = e->transform.scale.z,
-					.speed = e->speed
-				};
-				e->flags &= ~ENTITY_CREATE;
-				idx = e->next;
+			int32_t* idx = &entities.head;
+			while (*idx != -1) {
+				struct Entity* entity = &entities.data[*idx];
+				message->entities[message->entityCount++] = serializeEntity(*idx, 0);
+				entity->flags &= ~ENTITY_CREATED;
+
+				if (entity->flags & ENTITY_DESTROYED) {
+					int32_t temp = *idx;
+					*idx = entity->next;
+					entity->next = entities.firstFree;
+					entities.firstFree = temp;
+				} else {
+					idx = &entity->next;
+				}
 			}
 
-			idx = clients.head;
-			while (idx != -1) {
-				if (clients.data[idx].idleTime++ == TICKS_PER_SECOND * 5) {
-					// remove from linked list
+			idx = &clients.head;
+			while (*idx != -1) {
+				struct Client* client = &clients.data[*idx];
 
+				if (client->idleTime++ == TICKS_PER_SECOND * 5) {
+					entities.data[client->entityID].flags |= ENTITY_DESTROYED;
+
+					int32_t temp = *idx;
+					*idx = client->next;
+					client->next = clients.firstFree;
+					clients.firstFree = temp;
+				} else {
+					sendto(sock, (char*)message, offsetof(struct ServerMessageUpdate, entities) + message->entityCount * sizeof(struct ServerEntity), MSG_CONFIRM, (struct sockaddr*)&clients.data[*idx].address, sizeof(struct sockaddr_in));
+					idx = &client->next;
 				}
-
-				sendto(sock, (char*)message, offsetof(struct ServerMessageUpdate, entities) + message->entityCount * sizeof(struct ServerEntity), MSG_CONFIRM, (struct sockaddr*)&clients.data[idx].address, sizeof(struct sockaddr_in));
-
-				idx = clients.data[idx].next;
 			}
 
 			ticksElapsed++;

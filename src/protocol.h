@@ -5,6 +5,7 @@
 #include "assets.h"
 
 enum ClientMessageHeader {
+	CLIENT_MESSAGE_ID,
 	CLIENT_MESSAGE_UPDATE
 };
 
@@ -14,8 +15,8 @@ enum ServerMessageHeader {
 };
 
 enum EntityFlags : uint16_t {
-	ENTITY_CREATE = 1 << 0,
-	ENTITY_DESTROY = 1 << 1,
+	ENTITY_CREATED = 1 << 0,
+	ENTITY_DESTROYED = 1 << 1,
 };
 
 struct ServerEntity {
@@ -27,6 +28,28 @@ struct ServerEntity {
 	float rx, ry, rz, rw;
 	float sx, sy, sz;
 	float speed;
+};
+
+struct Transform {
+	Vec3 translation;
+	Quat rotation;
+	Vec3 scale;
+};
+
+struct Entity {
+	struct Transform transform;
+	float speed;
+	uint16_t flags;
+	enum MeshID mesh;
+#ifdef SERVER
+	int32_t clientID;
+	int32_t next;
+#endif
+};
+
+struct ClientMessageID {
+	uint16_t clientID;
+	uint16_t header;
 };
 
 struct ClientMessageUpdate {
