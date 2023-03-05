@@ -205,6 +205,8 @@ static struct Entity entityMap[UINT16_MAX];
 static uint16_t entities[UINT16_MAX];
 static uint16_t entityCount;
 
+static float yaw;
+static float pitch;
 static struct Camera camera = {
 	.right = { 1.f, 0.f, 0.f },
 	.up = { 0.f, 1.f, 0.f },
@@ -697,20 +699,26 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 			RAWINPUT rawInput;
 			GetRawInputData((HRAWINPUT)lParam, RID_INPUT, &rawInput, &(UINT){ sizeof(RAWINPUT) }, sizeof(RAWINPUTHEADER));
 
-			float yaw = -0.0005f * (float)rawInput.data.mouse.lLastX;
-			float pitch = -0.0005f * (float)rawInput.data.mouse.lLastY;
+			pitch -= 0.0005f * (float)rawInput.data.mouse.lLastY;
+			yaw -= 0.0005f * (float)rawInput.data.mouse.lLastX;
+			pitch = CLAMP(pitch, -(float)M_PI * 0.4f, (float)M_PI * 0.3f);
+			yaw += (yaw > M_PI) ? -(float)M_PI * 2.f : (yaw < -M_PI) ? (float)M_PI * 2.f : 0.f;
 
-			Quat pitchQuat = quatFromAxisAngle(camera.right, pitch);
-			Vec3 pitchForward = vec3TransformQuat(camera.forward, pitchQuat);
+			float sp = sinf(pitch);
+			float cp = cosf(pitch);
+			float sy = sinf(yaw);
+			float cy = cosf(yaw);
 
-			Quat yawQuat = quatFromAxisAngle((Vec3){ 0.f, 1.f, 0.f }, yaw);
-			Vec3 yawForward = vec3TransformQuat(pitchForward, yawQuat);
+			camera.right = (Vec3){ cy, 0, -sy };
+			camera.up = (Vec3){ sy * sp, cp, cy * sp };
+			camera.forward = (Vec3){ sy * cp, -sp, cp * cy };
 
-			// player.rotation = quatMultiply(pitchQuat, yawQuat);
+			if (entityID != -1) {
+				Quat pitchQuat = quatFromAxisAngle((Vec3){ 1.f, 0.f, 0.f }, -pitch);
+				Quat yawQuat = quatFromAxisAngle((Vec3){ 0.f, 1.f, 0.f }, -yaw);
 
-			camera.forward = vec3Normalize(yawForward);
-			camera.right = vec3Normalize(vec3Cross((Vec3){ 0.f, 1.f, 0.f }, camera.forward));
-			camera.up = vec3Normalize(vec3Cross(camera.forward, camera.right));
+				entityMap[entityID].transform.rotation = quatMultiply(yawQuat, pitchQuat);
+			}
 
 			return DefWindowProcW(hWnd, msg, wParam, lParam);
 		} break;

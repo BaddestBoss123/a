@@ -73,8 +73,8 @@ move indices ../indices
 move vertices ../vertices
 move attributes ../attributes
 popd
-call ktx2.cmd
-del ktx2.cmd
+rem call ktx2.cmd
+rem del ktx2.cmd
 
 clang src/dwrite.cpp src/triangle.c -Ofast -o build/triangle_speed.exe %COMPILE_FLAGS% %LINK_FLAGS%
 clang src/dwrite.cpp src/triangle.c -Oz -o build/triangle_size.exe %COMPILE_FLAGS% %LINK_FLAGS%
