@@ -812,42 +812,6 @@ static struct {
 } draws[MAX_INSTANCES];
 static uint32_t drawCount;
 
-static void travelPortal(struct Entity* entity, Vec3 origin, Vec3 destination) {
-	Vec3 direction = destination - origin;
-
-	if (vec3Length(direction) > 0.f) {
-		direction = vec3Normalize(direction);
-
-		for (uint32_t i = 0; i < _countof(portals); i++) {
-			struct Portal* portal = &portals[i];
-
-			Vec3 normal = vec3TransformQuat((Vec3){ 0.f, 0.f, 1.f }, portal->transform.rotation);
-			Vec4 plane = { normal.x, normal.y, normal.z, fabs(vec3Dot((Vec3){ 0 }, normal)) };
-
-			float t = rayPlane(origin, direction, plane);
-
-			if (t > 1.f || t < 0.f)
-				continue;
-
-			Vec3 hit = origin + direction * t;
-			hit -= portal->transform.translation;
-			hit = vec3TransformQuat(hit, quatConjugate(portal->transform.rotation));
-
-			if (fabs(hit.x) > portal->transform.scale.x || fabs(hit.y) > portal->transform.scale.y)
-				continue;
-
-			struct Portal* link = &portals[portal->link];
-			Quat q = quatMultiply(link->transform.rotation, quatConjugate(portal->transform.rotation));
-			entity->transform.translation = link->transform.translation + vec3TransformQuat(entity->transform.translation - portal->transform.translation, q);
-
-			// 	Euler euler = eulerFromQuat(q);
-			// 	// TODO: am I going to implement roll and pitch too?!
-			// 	yaw += euler.yaw;
-			return;
-		}
-	}
-}
-
 static void drawScene(VkCommandBuffer commandBuffer, struct Camera camera, Vec4 clippingPlane, uint32_t recursionDepth, int32_t skipPortal) {
 	Mat4 viewMatrix;
 	viewMatrix[0][0] = camera.right.x;
@@ -949,6 +913,8 @@ void WinMainCRTStartup(void) {
 	LARGE_INTEGER countsPerSecond;
 	QueryPerformanceFrequency(&countsPerSecond);
 	float countsPerTick = (float)countsPerSecond.QuadPart / TICKS_PER_SECOND;
+
+	portals[0].transform.rotation = quatFromAxisAngle((Vec3){ 0.f, 1.f, 0.f }, M_PI * 0.5f);
 
 	hInstance = GetModuleHandleW(NULL);
 	mainFiber = ConvertThreadToFiber(NULL);
@@ -1988,7 +1954,46 @@ void WinMainCRTStartup(void) {
 				player->transform.translation += player->speed * forwardMovement;
 				player->transform.translation += player->speed * sidewaysMovement;
 
-				travelPortal(player, previousPlayerTranslation, player->transform.translation);
+				Vec3 direction = player->transform.translation - previousPlayerTranslation;
+
+				if (vec3Length(direction) > 0.f) {
+					direction = vec3Normalize(direction);
+
+					for (uint32_t i = 0; i < _countof(portals); i++) {
+						struct Portal* portal = &portals[i];
+
+						Vec3 normal = vec3TransformQuat((Vec3){ 0.f, 0.f, 1.f }, portal->transform.rotation);
+						Vec4 plane = { normal.x, normal.y, normal.z, fabs(vec3Dot((Vec3){ 0 }, normal)) };
+
+						float t = rayPlane(previousPlayerTranslation, direction, plane);
+
+						if (t > 1.f || t < 0.f)
+							continue;
+
+						Vec3 hit = previousPlayerTranslation + direction * t;
+						hit -= portal->transform.translation;
+						hit = vec3TransformQuat(hit, quatConjugate(portal->transform.rotation));
+
+						if (fabs(hit.x) > portal->transform.scale.x || fabs(hit.y) > portal->transform.scale.y)
+							continue;
+
+						struct Portal* link = &portals[portal->link];
+						Quat q = quatMultiply(link->transform.rotation, quatConjugate(portal->transform.rotation));
+						player->transform.translation = link->transform.translation + vec3TransformQuat(player->transform.translation - portal->transform.translation, q);
+
+						OutputDebugStringA("traveling through portal\n");
+
+						// TODO: pitch/roll?
+						float sinp = 2 * (q.w * q.y - q.z * q.x);
+						if (fabs(sinp) >= 1.f)
+							yaw += copysignf((float)M_PI * 0.5f, sinp); // use 90 degrees if out of range
+						else
+							yaw += asinf(sinp);
+
+						previousPlayerTranslation = player->transform.translation;
+						break;
+					}
+				}
 
 				sendto(sock, (char*)&(struct ClientMessageUpdate){
 					.clientID = clientID,
