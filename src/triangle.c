@@ -812,6 +812,42 @@ static struct {
 } draws[MAX_INSTANCES];
 static uint32_t drawCount;
 
+static void travelPortal(struct Entity* entity, Vec3 origin, Vec3 destination) {
+	Vec3 direction = destination - origin;
+
+	if (vec3Length(direction) > 0.f) {
+		direction = vec3Normalize(direction);
+
+		for (uint32_t i = 0; i < _countof(portals); i++) {
+			struct Portal* portal = &portals[i];
+
+			Vec3 normal = vec3TransformQuat((Vec3){ 0.f, 0.f, 1.f }, portal->transform.rotation);
+			Vec4 plane = { normal.x, normal.y, normal.z, fabs(vec3Dot((Vec3){ 0 }, normal)) };
+
+			float t = rayPlane(origin, direction, plane);
+
+			if (t > 1.f || t < 0.f)
+				continue;
+
+			Vec3 hit = origin + direction * t;
+			hit -= portal->transform.translation;
+			hit = vec3TransformQuat(hit, quatConjugate(portal->transform.rotation));
+
+			if (fabs(hit.x) > portal->transform.scale.x || fabs(hit.y) > portal->transform.scale.y)
+				continue;
+
+			struct Portal* link = &portals[portal->link];
+			Quat q = quatMultiply(link->transform.rotation, quatConjugate(portal->transform.rotation));
+			entity->transform.translation = link->transform.translation + vec3TransformQuat(entity->transform.translation - portal->transform.translation, q);
+
+			// 	Euler euler = eulerFromQuat(q);
+			// 	// TODO: am I going to implement roll and pitch too?!
+			// 	yaw += euler.yaw;
+			return;
+		}
+	}
+}
+
 static void drawScene(VkCommandBuffer commandBuffer, struct Camera camera, Vec4 clippingPlane, uint32_t recursionDepth, int32_t skipPortal) {
 	Mat4 viewMatrix;
 	viewMatrix[0][0] = camera.right.x;
@@ -1921,7 +1957,8 @@ void WinMainCRTStartup(void) {
 			ticksElapsed < targetTicksElapsed;
 		})) {
 			if (entityID != -1) {
-				previousPlayerTranslation = entityMap[entityID].transform.translation;
+				struct Entity* player = &entityMap[entityID];
+				previousPlayerTranslation = player->transform.translation;
 
 				Vec3 forwardMovement = { 0 };
 				Vec3 sidewaysMovement = { 0 };
@@ -1937,9 +1974,9 @@ void WinMainCRTStartup(void) {
 					sidewaysMovement = vec3Normalize((Vec3){ camera.right.x, 0.f, camera.right.z });
 
 				if ((input & INPUT_START_UP) && !(input & INPUT_START_DOWN))
-					entityMap[entityID].transform.translation.y += 0.09f;
+					player->transform.translation.y += 0.09f;
 				else if ((input & INPUT_START_DOWN) && !(input & INPUT_START_UP))
-					entityMap[entityID].transform.translation.y -= 0.09f;
+					player->transform.translation.y -= 0.09f;
 
 				if (input & INPUT_STOP_FORWARD) input &= ~(INPUT_START_FORWARD | INPUT_STOP_FORWARD);
 				if (input & INPUT_STOP_BACK) input &= ~(INPUT_START_BACK | INPUT_STOP_BACK);
@@ -1948,14 +1985,10 @@ void WinMainCRTStartup(void) {
 				if (input & INPUT_STOP_DOWN) input &= ~(INPUT_START_DOWN | INPUT_STOP_DOWN);
 				if (input & INPUT_STOP_UP) input &= ~(INPUT_START_UP | INPUT_STOP_UP);
 
-				entityMap[entityID].transform.translation += entityMap[entityID].speed * forwardMovement;
-				entityMap[entityID].transform.translation += entityMap[entityID].speed * sidewaysMovement;
+				player->transform.translation += player->speed * forwardMovement;
+				player->transform.translation += player->speed * sidewaysMovement;
 
-				for (uint32_t i = 0; i < _countof(portals); i++) {
-					// todo: portal travel
-					// Portal* portal = &portals[i];
-					// Portal* link = &portals[portal->link];
-				}
+				travelPortal(player, previousPlayerTranslation, player->transform.translation);
 
 				sendto(sock, (char*)&(struct ClientMessageUpdate){
 					.clientID = clientID,
@@ -1981,12 +2014,18 @@ void WinMainCRTStartup(void) {
 			continue;
 		}
 
+		if (entityID != -1) {
+			struct Entity* player = &entityMap[entityID];
+			camera.position = player->transform.translation;//vec3Lerp(previousPlayerTranslation, player->transform.translation, interpolationFactor);
+
+			// travelPortal(player, camera.position, player->transform.translation);
+		}
+
 		// Vec3 sunDirection = vec3Normalize((Vec3){ 0.36f, 0.8f, 0.48f });
 		// Mat4 ortho = mat4Ortho(-50.f, 50.f, -50.f, 50.f, 1.f, 100.f);
 
-		camera.position = vec3Lerp(previousPlayerTranslation, entityMap[entityID].transform.translation, interpolationFactor);
-		portals[0].transform.rotation = quatRotateY(portals[0].transform.rotation, 0.001);
-		portals[1].transform.rotation = quatRotateY(portals[1].transform.rotation, -0.001);
+		// portals[0].transform.rotation = quatRotateY(portals[0].transform.rotation, 0.001);
+		// portals[1].transform.rotation = quatRotateY(portals[1].transform.rotation, -0.001);
 
 		drawCount = 0;
 		instanceCount = 0;
@@ -2009,6 +2048,8 @@ void WinMainCRTStartup(void) {
 
 					Vec3 min = primitive->min;
 					Vec3 max = primitive->max;
+
+					// Vec3 center = 0.5 * (max + min);
 
 					Vec3 scale = entity->transform.scale * (max - min);
 					Vec3 translation = entity->transform.translation + (entity->transform.scale * min);

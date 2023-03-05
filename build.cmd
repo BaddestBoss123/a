@@ -64,18 +64,18 @@ spirv-as shaders.spvasm --target-env vulkan1.0 -o shaders.spv
 spirv-val shaders.spv
 popd
 
-clang src/asset_generator.c -g -o build/asset_generator.exe %COMPILE_FLAGS% %LINK_FLAGS%
-pushd build
-asset_generator.exe
-move ktx2.cmd ../ktx2.cmd
-move assets.h ../src/assets.h
-move indices ../indices
-move vertices ../vertices
-move attributes ../attributes
-popd
+rem clang src/asset_generator.c -g -o build/asset_generator.exe %COMPILE_FLAGS% %LINK_FLAGS%
+rem pushd build
+rem asset_generator.exe
+rem move ktx2.cmd ../ktx2.cmd
+rem move assets.h ../src/assets.h
+rem move indices ../indices
+rem move vertices ../vertices
+rem move attributes ../attributes
+rem popd
 rem call ktx2.cmd
 rem del ktx2.cmd
 
-clang src/dwrite.cpp src/triangle.c -Ofast -o build/triangle_speed.exe %COMPILE_FLAGS% %LINK_FLAGS%
-clang src/dwrite.cpp src/triangle.c -Oz -o build/triangle_size.exe %COMPILE_FLAGS% %LINK_FLAGS%
+rem clang src/dwrite.cpp src/triangle.c -Ofast -o build/triangle_speed.exe %COMPILE_FLAGS% %LINK_FLAGS%
+rem clang src/dwrite.cpp src/triangle.c -Oz -o build/triangle_size.exe %COMPILE_FLAGS% %LINK_FLAGS%
 clang src/dwrite.cpp src/triangle.c -g -o build/triangle_debug.exe %COMPILE_FLAGS% %LINK_FLAGS%

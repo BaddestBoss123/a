@@ -246,6 +246,10 @@ static inline Quat quatSlerp(Quat a, Quat b, float t) {
 	};
 }
 
+static inline float rayPlane(Vec3 origin, Vec3 direction, Vec4 plane) {
+	return -(vec3Dot(origin, plane.xyz) + plane.w) / vec3Dot(direction, plane.xyz);
+}
+
 static inline double xorshift128(void) {
 	static uint64_t s[2] = { 0x9F1BA8B45C823D64, 0xBABABBF358762342 };
 
