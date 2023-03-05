@@ -267,6 +267,6 @@ static inline double xorshift128(void) {
     return random.d - 1.0;
 }
 
-static inline double random(double min, double max) {
+static inline double rnd(double min, double max) {
 	return xorshift128() * (max - min) + min;
 }

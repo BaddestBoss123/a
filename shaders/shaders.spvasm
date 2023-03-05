@@ -1,4 +1,5 @@
 OpCapability Shader
+OpCapability ClipDistance
 %glsl = OpExtInstImport "GLSL.std.450"
 OpMemoryModel Logical Simple
 
@@ -13,8 +14,8 @@ OpDecorate %vTexCoord Location 0
 OpDecorate %vDir Location 0
 
 OpMemberDecorate %PerVertex 0 BuiltIn Position
-; OpMemberDecorate %PerVertex 1 BuiltIn PointSize
-; OpMemberDecorate %PerVertex 2 BuiltIn ClipDistance
+OpMemberDecorate %PerVertex 1 BuiltIn PointSize
+OpMemberDecorate %PerVertex 2 BuiltIn ClipDistance
 ; OpMemberDecorate %PerVertex 3 BuiltIn CullDistance
 OpDecorate %PerVertex Block
 
@@ -22,6 +23,7 @@ OpDecorate %PushConstants Block
 OpMemberDecorate %PushConstants 0 ColMajor
 OpMemberDecorate %PushConstants 0 Offset 0
 OpMemberDecorate %PushConstants 0 MatrixStride 16
+OpMemberDecorate %PushConstants 1 Offset 64
 
 %Void = OpTypeVoid
 %FnVoid = OpTypeFunction %Void
@@ -47,13 +49,14 @@ OpMemberDecorate %PushConstants 0 MatrixStride 16
 
 %ArrF32_1 = OpTypeArray %F32 %I32_1
 
-%PerVertex = OpTypeStruct %Vec4
-%PushConstants = OpTypeStruct %Mat4
+%PerVertex = OpTypeStruct %Vec4 %F32 %ArrF32_1
+%PushConstants = OpTypeStruct %Mat4 %Vec4
 
 %PtrFunctionVec2 = OpTypePointer Function %Vec2
 
 %PtrPushConstantPushConstants = OpTypePointer PushConstant %PushConstants
 %PtrPushConstantMat4 = OpTypePointer PushConstant %Mat4
+%PtrPushConstantVec4 = OpTypePointer PushConstant %Vec4
 
 %PtrInputI32 = OpTypePointer Input %I32
 
@@ -128,6 +131,11 @@ OpFunctionEnd
 	%111 = OpMatrixTimesVector %Vec4 %109 %110
 	%112 = OpAccessChain %PtrOutputVec4 %gl_PerVertex %I32_0
 	OpStore %112 %111
+	%113 = OpAccessChain %PtrPushConstantVec4 %pushConstants %I32_1
+	%114 = OpLoad %Vec4 %113
+	%115 = OpDot %F32 %114 %111
+	%116 = OpAccessChain %PtrOutputF32 %gl_PerVertex %I32_2 %I32_0
+	OpStore %116 %115
 	OpReturn
 OpFunctionEnd
 
