@@ -1,3 +1,8 @@
+#define FRAMES_IN_FLIGHT 2
+#define MAX_INSTANCES 0x10000
+#define MAX_PARTICLES 1024
+#define MAX_PORTAL_RECURSION 2
+#define SHADOW_MAP_RESOLUTION 1024
 #pragma comment(lib, "kernel32")
 #pragma comment(lib, "user32")
 #pragma comment(lib, "vcruntime.lib")
@@ -6,13 +11,6 @@
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "dwrite.lib")
 #pragma comment(lib, "d2d1.lib")
-
-#define FRAMES_IN_FLIGHT 2
-#define MAX_INSTANCES 0x10000
-#define MAX_PARTICLES 1024
-#define MAX_PORTAL_RECURSION 2
-#define SHADOW_MAP_RESOLUTION 1024
-
 #define OEMRESOURCE
 #define VK_USE_PLATFORM_WIN32_KHR
 #define VK_NO_PROTOTYPES
@@ -29,30 +27,27 @@
 #include <ws2tcpip.h>
 #undef near
 #undef far
-
-#define CLIENT
-#include "protocol.h"
-#include "freelist.h"
-
-#include "blit.frag.h"
+#include "game.h"
 #include "triangle.vert.h"
 #include "triangle.frag.h"
 #include "skybox.frag.h"
 #include "particle.vert.h"
 #include "particle.frag.h"
 #include "shadow.vert.h"
-
+int _fltused;
+static const GUID CLSID_MMDeviceEnumerator = { 0xbcde0395, 0xe52f, 0x467c, { 0x8e, 0x3d, 0xc4, 0x57, 0x92, 0x91, 0x69, 0x2e } };
+static const GUID IID_IMMDeviceEnumerator = { 0xa95664d2, 0x9614, 0x4f35, { 0xa7, 0x46, 0xde, 0x8d, 0xb6, 0x36, 0x17, 0xe6 } };
+static const GUID IID_IAudioClient = { 0x1cb9ad4c, 0xdbfa, 0x4c32, { 0xb1, 0x78, 0xc2, 0xf5, 0x68, 0xa7, 0x03, 0xb2 } };
+static const GUID IID_IAudioRenderClient = { 0xf294acfc, 0x3146, 0x4483, { 0xa7, 0xbf, 0xad, 0xdc, 0xa7, 0xc2, 0x60, 0xe2 } };
 INCBIN(shaders_spv, "shaders.spv");
 INCBIN(indices, "indices");
 INCBIN(vertices, "vertices");
 INCBIN(attributes, "attributes");
-
 #define F(fn) static PFN_##fn fn;
 	BEFORE_INSTANCE_FUNCS(F)
 	INSTANCE_FUNCS(F)
 	DEVICE_FUNCS(F)
 #undef F
-
 enum Input {
 	INPUT_START_LEFT = 1 << 0,
 	INPUT_START_FORWARD = 1 << 1,
@@ -68,7 +63,6 @@ enum Input {
 	INPUT_STOP_UP = 1 << 11,
 	INPUT_LOCK_CURSOR = 1 << 12
 };
-
 struct Button {
 	union {
 		float x;
@@ -81,24 +75,20 @@ struct Button {
 	float width;
 	float height;
 };
-
-struct Portal {
-	struct Transform transform;
-	uint32_t link;
-};
-
 struct Camera {
 	Vec3 position;
 	Vec3 right;
 	Vec3 up;
 	Vec3 forward;
 };
-
+struct PushConstants {
+	Mat4 mvp;
+	Vec4 clippingPlane;
+};
 struct Instance {
 	Mat4 mvp;
 	struct Material material;
 };
-
 struct Buffer {
 	VkBuffer buffer;
 	VkDeviceMemory deviceMemory;
@@ -108,7 +98,6 @@ struct Buffer {
 	VkMemoryPropertyFlags requiredMemoryPropertyFlagBits;
 	VkMemoryPropertyFlags optionalMemoryPropertyFlagBits;
 };
-
 enum BufferRanges {
 	BUFFER_RANGE_INDEX_VERTICES = ALIGN_FORWARD(16 * 1024 * 1024, 256), //ALIGN_FORWARD(((char*)&incbin_indices_end - (char*)&incbin_indices_start), 256),
 	BUFFER_RANGE_INDEX_QUADS = ALIGN_FORWARD(6 * 1024, 256), // todo calculate how many
@@ -117,7 +106,6 @@ enum BufferRanges {
 	BUFFER_RANGE_PARTICLES = ALIGN_FORWARD(MAX_PARTICLES, 256),
 	BUFFER_RANGE_INSTANCES = ALIGN_FORWARD(MAX_INSTANCES * sizeof(struct Instance), 256),
 };
-
 enum BufferOffsets {
 	BUFFER_OFFSET_INDEX_VERTICES = 0,
 	BUFFER_OFFSET_INDEX_QUADS = BUFFER_RANGE_INDEX_VERTICES,
@@ -126,7 +114,10 @@ enum BufferOffsets {
 	BUFFER_OFFSET_PARTICLES = 0,
 	BUFFER_OFFSET_INSTANCES = 0
 };
-
+static IAudioClient* audioClient;
+static UINT32 audioBufferSize;
+static IMMDevice* audioDevice;
+static IAudioRenderClient* audioRenderClient;
 static struct {
 	struct Buffer staging;
 	struct Buffer index;
@@ -161,9 +152,52 @@ static struct {
 		.optionalMemoryPropertyFlagBits = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
 	},
 };
-
+static struct Camera camera;
+static int32_t clientID = -1;
+static VkCommandBuffer commandBuffers[FRAMES_IN_FLIGHT];
+static VkCommandPool commandPools[FRAMES_IN_FLIGHT];
+static LARGE_INTEGER countsPerSecond;
+static VkImage depthImage;
+static VkDeviceMemory depthImageDeviceMemory;
+static VkImageView depthImageView;
+static VkDescriptorPool descriptorPool;
+static VkDescriptorSet descriptorSet;
+static VkDescriptorSetLayout descriptorSetLayout;
+static VkDevice device;
 static struct {
-	VkPipeline blit;
+	Mat4 model; // todo: adjoint stuff
+	struct Primitive* primitive;
+} draws[MAX_INSTANCES];
+static uint32_t drawCount;
+static uint16_t entities[UINT16_MAX];
+static uint16_t entityCount;
+static int32_t entityID = -1;
+static struct Entity entityMap[UINT16_MAX];
+static IMMDeviceEnumerator* enumerator;
+static VkFence fences[FRAMES_IN_FLIGHT];
+static uint32_t frame;
+static HMODULE hInstance;
+static uint64_t input;
+static VkInstance instance;
+static uint32_t instanceCount;
+static struct Instance* instances;
+static VkSemaphore imageAcquireSemaphores[FRAMES_IN_FLIGHT];
+static VkDescriptorImageInfo ktx2DescriptorImageInfos[_countof(ktx2ImageFiles)];
+static VkDeviceSize ktx2ImageAllocationSize;
+static VkDeviceSize ktx2ImageMemoryOffset;
+static VkDeviceMemory ktx2ImageMemory;
+static VkImageMemoryBarrier ktx2ImageMemoryBarriers[_countof(ktx2ImageFiles)];
+static VkImage ktx2Images[_countof(ktx2ImageFiles)];
+static LPVOID mainFiber;
+static VkMemoryRequirements memoryRequirements;
+static bool minimized;
+static VkPhysicalDevice physicalDevice;
+static VkPhysicalDeviceFeatures physicalDeviceFeatures;
+static VkPhysicalDeviceProperties physicalDeviceProperties;
+static VkPhysicalDeviceMemoryProperties physicalDeviceMemoryProperties;
+static float pitch;
+static VkPipelineLayout pipelineLayout;
+static struct {
 	VkPipeline triangle;
 	VkPipeline skybox;
 	VkPipeline particle;
@@ -172,79 +206,64 @@ static struct {
 	VkPipeline portalDepthWrite;
 	VkPipeline shadow;
 } pipelines;
-
-static VkDevice device;
-static VkPhysicalDevice physicalDevice;
-static VkPhysicalDeviceFeatures physicalDeviceFeatures;
-static VkPhysicalDeviceProperties physicalDeviceProperties;
-static VkPhysicalDeviceMemoryProperties physicalDeviceMemoryProperties;
-static uint32_t queueFamilyIndex;
-static VkRenderPass renderPass;
-static VkRenderPass renderPassBlit;
-static VkDescriptorSetLayout descriptorSetLayout;
-static VkDescriptorPool descriptorPool;
-static VkDescriptorSet descriptorSet;
-static VkSurfaceKHR surface;
-static VkSurfaceFormatKHR surfaceFormat;
-static VkSurfaceCapabilitiesKHR surfaceCapabilities;
-static VkSwapchainKHR swapchain;
-static VkFramebuffer framebuffer;
-static VkFramebuffer swapchainFramebuffers[8];
-static VkPipelineLayout pipelineLayout;
-
-static bool minimized;
-static HMODULE hInstance;
-static LPVOID mainFiber;
-static uint64_t input;
-static int32_t clientID = -1;
-static int32_t entityID = -1;
-
-static Mat4 projectionMatrix;
-
-static struct Entity entityMap[UINT16_MAX];
-static uint16_t entities[UINT16_MAX];
-static uint16_t entityCount;
-
-static float yaw;
-static float pitch;
-static struct Camera camera = {
-	.right = { 1.f, 0.f, 0.f },
-	.up = { 0.f, 1.f, 0.f },
-	.forward = { 0.f, 0.f, 1.f }
-};
-
 static struct Portal portals[] = {
 	{
-		.transform = {
-			.translation = { 1.f, 3.f, 0.f },
-			.rotation = { 0, 0, 0, 1 },
-			.scale = { 1, 1, 1 }
-		},
+		.translation = { 1.f, 3.f, 0.f },
+		.rotation = { 0, 0, 0, 1 },
+		.scale = { 1, 1, 1 },
 		.link = 1
 	}, {
-		.transform = {
-			.translation = { -1.f, 6.f, 0.f },
-			.rotation = { 0, 0, 0, 1 },
-			.scale = { 1, 1, 1 }
-		},
+		.translation = { -1.f, 6.f, 0.f },
+		.rotation = { 0, 0, 0, 1 },
+		.scale = { 1, 1, 1 },
 		.link = 0
 	}
 };
-
-static uint32_t getMemoryTypeIndex(uint32_t memoryTypeBits, VkMemoryPropertyFlags requiredFlags, VkMemoryPropertyFlags optionalFlags) {
+static Mat4 projectionMatrix;
+static VkQueue queue;
+static uint32_t queueFamilyIndex;
+static VkRenderPass renderPass;
+static VkRenderPass renderPassShadow;
+static VkSampler sampler;
+static VkSemaphore semaphores[FRAMES_IN_FLIGHT];
+static VkShaderModule shaderModule; // todo: everything in shaderModule
+static VkShaderModule triangleVert;
+static VkShaderModule triangleFrag;
+static VkShaderModule skyboxFrag;
+static VkShaderModule particleVert;
+static VkShaderModule particleFrag;
+static VkShaderModule shadowVert;
+static VkFramebuffer shadowFramebuffer;
+static VkImage shadowImage;
+static VkDeviceMemory shadowImageMemory;
+static VkImageView shadowImageView;
+static float smoothFactor;
+static VkDeviceSize stagingBufferDataOffset;
+static LARGE_INTEGER start;
+static VkSurfaceKHR surface;
+static VkSurfaceCapabilitiesKHR surfaceCapabilities;
+static VkSurfaceFormatKHR surfaceFormat;
+static VkSwapchainKHR swapchain;
+static VkFramebuffer swapchainFramebuffers[8];
+static VkImage swapchainImages[8];
+static uint32_t swapchainImagesCount;
+static uint32_t swapchainImageIndex;
+static VkImageView swapchainImageViews[8];
+static uint64_t ticksElapsed;
+// static Mat4 viewportMatrix;
+static WSADATA wsaData;
+static float yaw;
+static uint32_t getMemoryTypeIndex(VkMemoryPropertyFlags requiredFlags, VkMemoryPropertyFlags optionalFlags) {
 	for (uint32_t i = 0; i < physicalDeviceMemoryProperties.memoryTypeCount; i++) {
-		if ((memoryTypeBits & (1 << i)) && BITS_SET(physicalDeviceMemoryProperties.memoryTypes[i].propertyFlags, requiredFlags | optionalFlags))
+		if ((memoryRequirements.memoryTypeBits & (1 << i)) && BITS_SET(physicalDeviceMemoryProperties.memoryTypes[i].propertyFlags, requiredFlags | optionalFlags))
 			return i;
 	}
-
 	for (uint32_t i = 0; i < physicalDeviceMemoryProperties.memoryTypeCount; i++) {
-		if ((memoryTypeBits & (1 << i)) && BITS_SET(physicalDeviceMemoryProperties.memoryTypes[i].propertyFlags, requiredFlags))
+		if ((memoryRequirements.memoryTypeBits & (1 << i)) && BITS_SET(physicalDeviceMemoryProperties.memoryTypes[i].propertyFlags, requiredFlags))
 			return i;
 	}
-
 	return 0;
 }
-
 static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 	switch (msg) {
 		case WM_CREATE: {
@@ -254,18 +273,13 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 				.dwFlags = 0,
 				.hwndTarget = hWnd
 			}, 1, sizeof(RAWINPUTDEVICE));
-
 			PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)GetProcAddress(LoadLibraryW(L"vulkan-1.dll"), "vkGetInstanceProcAddr");
-
 			#define F(fn) fn = (PFN_##fn)vkGetInstanceProcAddr(NULL, #fn);
 			BEFORE_INSTANCE_FUNCS(F)
 			#undef F
-
 			uint32_t apiVersion = VK_API_VERSION_1_0;
 			if (vkEnumerateInstanceVersion)
 				vkEnumerateInstanceVersion(&apiVersion);
-
-			VkInstance instance;
 			vkCreateInstance(&(VkInstanceCreateInfo){
 				.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
 				.pApplicationInfo = &(VkApplicationInfo){
@@ -278,26 +292,21 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 					VK_KHR_WIN32_SURFACE_EXTENSION_NAME
 				}
 			}, NULL, &instance);
-
 			#define F(fn) fn = (PFN_##fn)vkGetInstanceProcAddr(instance, #fn);
 			INSTANCE_FUNCS(F)
 			#undef F
-
 			vkCreateWin32SurfaceKHR(instance, &(VkWin32SurfaceCreateInfoKHR){
 				.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
 				.hinstance = hInstance,
 				.hwnd = hWnd
 			}, NULL, &surface);
-
 			vkEnumeratePhysicalDevices(instance, &(uint32_t){ 1 }, &physicalDevice);
 			vkGetPhysicalDeviceMemoryProperties(physicalDevice, &physicalDeviceMemoryProperties);
 			vkGetPhysicalDeviceProperties(physicalDevice, &physicalDeviceProperties);
 			vkGetPhysicalDeviceFeatures(physicalDevice, &physicalDeviceFeatures);
-
 			VkSurfaceFormatKHR surfaceFormats[16];
 			uint32_t surfaceFormatCount = _countof(surfaceFormats);
 			vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &surfaceFormatCount, surfaceFormats);
-
 			surfaceFormat = surfaceFormats[0];
 			for (uint32_t i = 0; i < surfaceFormatCount; i++) {
 				if (surfaceFormats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR && surfaceFormats[i].format == VK_FORMAT_B8G8R8A8_SRGB) {
@@ -305,23 +314,19 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 					break;
 				}
 			}
-
 			VkQueueFamilyProperties queueFamilyProperties[16];
 			uint32_t queueFamilyPropertyCount = _countof(queueFamilyProperties);
 			vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyPropertyCount, queueFamilyProperties);
-
 			for (uint32_t i = 0; i < queueFamilyPropertyCount; i++) {
 				if (BITS_SET(queueFamilyProperties[i].queueFlags, (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT))) {
 					VkBool32 presentSupport;
 					vkGetPhysicalDeviceSurfaceSupportKHR(physicalDevice, i, surface, &presentSupport);
-
 					if (presentSupport) {
 						queueFamilyIndex = i;
 						break;
 					}
 				}
 			}
-
 			vkCreateDevice(physicalDevice, &(VkDeviceCreateInfo){
 				.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
 				.queueCreateInfoCount = 1,
@@ -336,21 +341,18 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 				.pEnabledFeatures = &(VkPhysicalDeviceFeatures){
 					.textureCompressionBC = physicalDeviceFeatures.textureCompressionBC,
 					.depthClamp = physicalDeviceFeatures.depthClamp,
-					.shaderClipDistance = physicalDeviceFeatures.shaderClipDistance,
-					// .samplerAnisotropy = physicalDeviceFeatures.samplerAnisotropy
+					.shaderClipDistance = physicalDeviceFeatures.shaderClipDistance
 				}
 			}, NULL, &device);
-
 			#define F(fn) fn = (PFN_##fn)vkGetDeviceProcAddr(device, #fn);
 			DEVICE_FUNCS(F)
 			#undef F
-
 			vkCreateRenderPass(device, &(VkRenderPassCreateInfo){
 				.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
 				.attachmentCount = 2,
 				.pAttachments = (VkAttachmentDescription[]){
 					{
-						.format = VK_FORMAT_R16G16B16A16_SFLOAT,
+						.format = surfaceFormat.format,
 						.samples = VK_SAMPLE_COUNT_1_BIT,
 						.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
 						.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
@@ -393,42 +395,6 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 					.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT
 				}
 			}, NULL, &renderPass);
-
-			vkCreateRenderPass(device, &(VkRenderPassCreateInfo){
-				.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-				.attachmentCount = 1,
-				.pAttachments = &(VkAttachmentDescription){
-					.format = surfaceFormat.format,
-					.samples = VK_SAMPLE_COUNT_1_BIT,
-					.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-					.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-					.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-					.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-					.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-					.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
-				},
-				.subpassCount = 1,
-				.pSubpasses = &(VkSubpassDescription){
-					.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
-					.colorAttachmentCount = 1,
-					.pColorAttachments = &(VkAttachmentReference){
-						.attachment = 0,
-						.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
-					}
-				},
-				.dependencyCount = 1,
-				.pDependencies = &(VkSubpassDependency){
-					.srcSubpass = VK_SUBPASS_EXTERNAL,
-					.dstSubpass = 0,
-					.srcStageMask = VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT,
-					.dstStageMask = VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT,
-					.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
-					.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
-					.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT
-				}
-			}, NULL, &renderPassBlit);
-
-			VkSampler sampler;
 			vkCreateSampler(device, &(VkSamplerCreateInfo){
 				.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
 				.magFilter = VK_FILTER_LINEAR,
@@ -436,50 +402,36 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 				.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
 				.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT,
 				.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT,
-				// .anisotropyEnable = physicalDeviceFeatures.samplerAnisotropy,
-				// .maxAnisotropy = 1.f,
 				.minLod = 0.f,
 				.maxLod = VK_LOD_CLAMP_NONE
 			}, NULL, &sampler);
-
-			VkSampler samplers[_countof(ktx2Images)];
+			VkSampler samplers[_countof(ktx2ImageFiles)];
 			for (uint32_t i = 0; i < _countof(samplers); i++)
 				samplers[i] = sampler;
-
 			vkCreateDescriptorSetLayout(device, &(VkDescriptorSetLayoutCreateInfo){
 				.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-				.bindingCount = 2,
+				.bindingCount = 1,
 				.pBindings = (VkDescriptorSetLayoutBinding[]){
 					{
 						.binding = 0,
-						.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-						.descriptorCount = 1,
-						.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT
-					}, {
-						.binding = 1,
 						.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-						.descriptorCount = _countof(ktx2Images),
+						.descriptorCount = _countof(ktx2ImageFiles),
 						.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
 						.pImmutableSamplers = samplers
 					}
 				}
 			}, NULL, &descriptorSetLayout);
-
 			vkCreateDescriptorPool(device, &(VkDescriptorPoolCreateInfo){
 				.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
 				.maxSets = 1,
-				.poolSizeCount = 2,
+				.poolSizeCount = 1,
 				.pPoolSizes = (VkDescriptorPoolSize[]){
 					{
-						.type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-						.descriptorCount = 1
-					}, {
 						.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-						.descriptorCount = _countof(ktx2Images)
+						.descriptorCount = _countof(ktx2ImageFiles)
 					}
 				}
 			}, NULL, &descriptorPool);
-
 			vkAllocateDescriptorSets(device, &(VkDescriptorSetAllocateInfo){
 				.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
 				.descriptorPool = descriptorPool,
@@ -491,30 +443,17 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 			PostQuitMessage(0);
 		} break;
 		case WM_SIZE: {
-			static VkImage colorImage;
-			static VkImageView colorImageView;
-			static VkDeviceMemory colorDeviceMemory;
-			static VkImage depthImage;
-			static VkImageView depthImageView;
-			static VkDeviceMemory depthDeviceMemory;
-			static VkImageView swapchainImageViews[8];
-			static uint32_t swapchainImagesCount;
-
-			VkImage swapchainImages[8];
 			vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, &surfaceCapabilities);
-
 			if (surfaceCapabilities.currentExtent.width == 0 || surfaceCapabilities.currentExtent.height == 0) {
 				minimized = true;
 				break;
 			}
 			minimized = false;
-
 			float f = 1.f / tanf(0.78 / 2.f);
 			projectionMatrix[0][0] = f / ((float)surfaceCapabilities.currentExtent.width / (float)surfaceCapabilities.currentExtent.height);
 			projectionMatrix[1][1] = -f;
 			projectionMatrix[2][3] = 0.1f;
 			projectionMatrix[3][2] = -1.f;
-
 			VkSwapchainCreateInfoKHR swapchainCreateInfo = {
 				.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
 				.surface = surface,
@@ -530,71 +469,20 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 				.clipped = VK_TRUE,
 				.oldSwapchain = swapchain
 			};
-
 			vkCreateSwapchainKHR(device, &swapchainCreateInfo, NULL, &swapchain);
-
 			if (swapchainCreateInfo.oldSwapchain != VK_NULL_HANDLE) {
 				vkDeviceWaitIdle(device);
-
-				vkDestroyFramebuffer(device, framebuffer, NULL);
-
-				vkDestroyImageView(device, colorImageView, NULL);
-				vkDestroyImage(device, colorImage, NULL);
-				vkFreeMemory(device, colorDeviceMemory, NULL);
-
 				vkDestroyImageView(device, depthImageView, NULL);
 				vkDestroyImage(device, depthImage, NULL);
-				vkFreeMemory(device, depthDeviceMemory, NULL);
-
+				vkFreeMemory(device, depthImageDeviceMemory, NULL);
 				for (uint32_t i = 0; i < swapchainImagesCount; i++) {
 					vkDestroyFramebuffer(device, swapchainFramebuffers[i], NULL);
 					vkDestroyImageView(device, swapchainImageViews[i], NULL);
 				}
 				vkDestroySwapchainKHR(device, swapchainCreateInfo.oldSwapchain, NULL);
 			}
-
 			swapchainImagesCount = _countof(swapchainImages);
 			vkGetSwapchainImagesKHR(device, swapchain, &swapchainImagesCount, swapchainImages);
-
-			vkCreateImage(device, &(VkImageCreateInfo){
-				.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-				.imageType = VK_IMAGE_TYPE_2D,
-				.format = VK_FORMAT_R16G16B16A16_SFLOAT,
-				.extent = {
-					.width = surfaceCapabilities.currentExtent.width,
-					.height = surfaceCapabilities.currentExtent.height,
-					.depth = 1
-				},
-				.mipLevels = 1,
-				.arrayLayers = 1,
-				.samples = VK_SAMPLE_COUNT_1_BIT,
-				.tiling = VK_IMAGE_TILING_OPTIMAL,
-				.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
-			}, NULL, &colorImage);
-
-			VkMemoryRequirements memoryRequirements;
-			vkGetImageMemoryRequirements(device, colorImage, &memoryRequirements);
-			vkAllocateMemory(device, &(VkMemoryAllocateInfo){
-				.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-				.pNext = &(VkMemoryDedicatedAllocateInfo){
-					.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
-					.image = colorImage
-				},
-				.allocationSize = memoryRequirements.size,
-				.memoryTypeIndex = getMemoryTypeIndex(memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0)
-			}, NULL, &colorDeviceMemory);
-			vkBindImageMemory(device, colorImage, colorDeviceMemory, 0);
-			vkCreateImageView(device, &(VkImageViewCreateInfo){
-				.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-				.image = colorImage,
-				.viewType = VK_IMAGE_VIEW_TYPE_2D,
-				.format = VK_FORMAT_R16G16B16A16_SFLOAT,
-				.subresourceRange = {
-					.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-					.levelCount = 1,
-					.layerCount = 1
-				}
-			}, NULL, &colorImageView);
 			vkCreateImage(device, &(VkImageCreateInfo){
 				.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
 				.imageType = VK_IMAGE_TYPE_2D,
@@ -610,7 +498,6 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 				.tiling = VK_IMAGE_TILING_OPTIMAL,
 				.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
 			}, NULL, &depthImage);
-
 			vkGetImageMemoryRequirements(device, depthImage, &memoryRequirements);
 			vkAllocateMemory(device, &(VkMemoryAllocateInfo){
 				.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
@@ -619,9 +506,9 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 					.image = depthImage
 				},
 				.allocationSize = memoryRequirements.size,
-				.memoryTypeIndex = getMemoryTypeIndex(memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0)
-			}, NULL, &depthDeviceMemory);
-			vkBindImageMemory(device, depthImage, depthDeviceMemory, 0);
+				.memoryTypeIndex = getMemoryTypeIndex(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0)
+			}, NULL, &depthImageDeviceMemory);
+			vkBindImageMemory(device, depthImage, depthImageDeviceMemory, 0);
 			vkCreateImageView(device, &(VkImageViewCreateInfo){
 				.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
 				.image = depthImage,
@@ -633,17 +520,6 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 					.layerCount = 1
 				}
 			}, NULL, &depthImageView);
-
-			vkCreateFramebuffer(device, &(VkFramebufferCreateInfo){
-				.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
-				.renderPass = renderPass,
-				.attachmentCount = 2,
-				.pAttachments = (VkImageView[]){ colorImageView, depthImageView },
-				.width = surfaceCapabilities.currentExtent.width,
-				.height = surfaceCapabilities.currentExtent.height,
-				.layers = 1
-			}, NULL, &framebuffer);
-
 			for (uint32_t i = 0; i < swapchainImagesCount; i++) {
 				vkCreateImageView(device, &(VkImageViewCreateInfo){
 					.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -656,36 +532,20 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 						.layerCount = 1
 					}
 				}, NULL, &swapchainImageViews[i]);
-
 				vkCreateFramebuffer(device, &(VkFramebufferCreateInfo){
 					.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
-					.renderPass = renderPassBlit,
-					.attachmentCount = 1,
-					.pAttachments = &swapchainImageViews[i],
+					.renderPass = renderPass,
+					.attachmentCount = 2,
+					.pAttachments = (VkImageView[]){ swapchainImageViews[i], depthImageView },
 					.width = surfaceCapabilities.currentExtent.width,
 					.height = surfaceCapabilities.currentExtent.height,
 					.layers = 1
 				}, NULL, &swapchainFramebuffers[i]);
 			}
-
-			vkUpdateDescriptorSets(device, 1, &(VkWriteDescriptorSet){
-				.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-				.dstSet = descriptorSet,
-				.dstBinding = 0,
-				.dstArrayElement = 0,
-				.descriptorCount = 1,
-				.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-				.pImageInfo = &(VkDescriptorImageInfo){
-					.imageView = colorImageView,
-					.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-				}
-			}, 0, NULL);
 		} break;
 		case WM_ACTIVATE: {
 			if (wParam == WA_INACTIVE) {
-
-			} else {
-
+				input |= (INPUT_STOP_FORWARD | INPUT_STOP_LEFT | INPUT_STOP_BACK |INPUT_STOP_RIGHT | INPUT_STOP_UP | INPUT_STOP_DOWN);
 			}
 		} break;
 		case WM_CLOSE: {
@@ -698,35 +558,13 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 		case WM_INPUT: {
 			RAWINPUT rawInput;
 			GetRawInputData((HRAWINPUT)lParam, RID_INPUT, &rawInput, &(UINT){ sizeof(RAWINPUT) }, sizeof(RAWINPUTHEADER));
-
 			pitch -= 0.0005f * (float)rawInput.data.mouse.lLastY;
 			yaw -= 0.0005f * (float)rawInput.data.mouse.lLastX;
-			pitch = CLAMP(pitch, -(float)M_PI * 0.4f, (float)M_PI * 0.3f);
-			yaw += (yaw > M_PI) ? -(float)M_PI * 2.f : (yaw < -M_PI) ? (float)M_PI * 2.f : 0.f;
-
-			float sp = sinf(pitch);
-			float cp = cosf(pitch);
-			float sy = sinf(yaw);
-			float cy = cosf(yaw);
-
-			camera.right = (Vec3){ cy, 0, -sy };
-			camera.up = (Vec3){ sy * sp, cp, cy * sp };
-			camera.forward = (Vec3){ sy * cp, -sp, cp * cy };
-
-			if (entityID != -1) {
-				Quat pitchQuat = quatFromAxisAngle((Vec3){ 1.f, 0.f, 0.f }, -pitch);
-				Quat yawQuat = quatFromAxisAngle((Vec3){ 0.f, 1.f, 0.f }, -yaw);
-
-				entityMap[entityID].transform.rotation = quatMultiply(yawQuat, pitchQuat);
-			}
-
 			return DefWindowProcW(hWnd, msg, wParam, lParam);
 		} break;
 		case WM_KEYDOWN: {
 			switch (wParam) {
-				case VK_ESCAPE: {
-
-				} break;
+				case VK_ESCAPE: { } break;
 				case VK_UP: case 'W': input |= INPUT_START_FORWARD; break;
 				case VK_LEFT: case 'A': input |= INPUT_START_LEFT; break;
 				case VK_DOWN: case 'S': input |= INPUT_START_BACK; break;
@@ -738,9 +576,7 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 				} break;
 				case VK_F11: {
 					static WINDOWPLACEMENT previous = { sizeof(WINDOWPLACEMENT) };
-
 					LONG_PTR style = GetWindowLongPtrW(hWnd, GWL_STYLE);
-
 					if (style & WS_OVERLAPPEDWINDOW) {
 						MONITORINFO current = { sizeof(MONITORINFO) };
 						GetWindowPlacement(hWnd, &previous);
@@ -784,34 +620,20 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 			return DefWindowProcW(hWnd, msg, wParam, lParam);
 		} break;
 	}
-
 	return 0;
 }
-
 static void CALLBACK messageFiberProc(LPVOID lpParameter) {
 	for (;;) {
 		MSG msg;
 		while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
 			if (msg.message == WM_QUIT)
 				ExitProcess(0);
-
 			TranslateMessage(&msg);
 			DispatchMessageW(&msg);
 		}
-
 		SwitchToFiber(mainFiber);
 	}
 }
-
-static struct Instance* instances;
-static uint32_t instanceCount;
-
-static struct {
-	Mat4 model; // todo: adjoint stuff
-	struct Primitive* primitive;
-} draws[MAX_INSTANCES];
-static uint32_t drawCount;
-
 static void drawScene(VkCommandBuffer commandBuffer, struct Camera camera, Vec4 clippingPlane, uint32_t recursionDepth, int32_t skipPortal) {
 	Mat4 viewMatrix;
 	viewMatrix[0][0] = camera.right.x;
@@ -832,93 +654,64 @@ static void drawScene(VkCommandBuffer commandBuffer, struct Camera camera, Vec4 
 	viewMatrix[3][3] = 1.f;
 	Mat4 viewProjection = projectionMatrix * viewMatrix;
 	clippingPlane = vec4TransformMat4(clippingPlane, mat4Inverse(__builtin_matrix_transpose(viewProjection)));
-
 	if (recursionDepth < MAX_PORTAL_RECURSION) {
 		for (uint32_t i = 0; i < _countof(portals); i++) {
 			if (i == skipPortal)
 				continue;
-
 			// todo: portal culling
 			struct Portal* portal = &portals[i];
 			struct Portal* link = &portals[portal->link];
-
-			Mat4 portalMVP = viewProjection * mat4FromRotationTranslationScale(portal->transform.rotation, portal->transform.translation, portal->transform.scale);
-			Quat q = quatMultiply(link->transform.rotation, quatConjugate(portal->transform.rotation));
-
+			Mat4 portalMVP = viewProjection * mat4FromRotationTranslationScale(portal->rotation, portal->translation, portal->scale);
+			Quat q = quatMultiply(link->rotation, quatConjugate(portal->rotation));
 			struct Camera portalCamera = {
-				.position = link->transform.translation + vec3TransformQuat(camera.position - portal->transform.translation, q),
+				.position = link->translation + vec3TransformQuat(camera.position - portal->translation, q),
 				.right = vec3TransformQuat(camera.right, q),
 				.up = vec3TransformQuat(camera.up, q),
 				.forward = vec3TransformQuat(camera.forward, q)
 			};
-
-			struct {
-				Mat4 mvp;
-				Vec4 clippingPlane;
-			} pushConstants = {
+			struct PushConstants pushConstants = {
 				.mvp = portalMVP,
 				.clippingPlane = clippingPlane
 			};
-
 			vkCmdSetStencilReference(commandBuffer, VK_STENCIL_FACE_FRONT_AND_BACK, recursionDepth);
 			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.portalStencil);
-			vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pushConstants), &pushConstants);
+			vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(struct PushConstants), &pushConstants);
 			vkCmdDrawIndexed(commandBuffer, 6, 1, BUFFER_OFFSET_INDEX_QUADS / sizeof(uint16_t), 0, 0);
-
 			vkCmdSetStencilReference(commandBuffer, VK_STENCIL_FACE_FRONT_AND_BACK, recursionDepth + 1);
 			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.portalDepthClear);
 			pushConstants.mvp[2][0] = pushConstants.mvp[2][1] = pushConstants.mvp[2][2] = pushConstants.mvp[2][3] = 0;
-			vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pushConstants), &pushConstants);
+			vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(struct PushConstants), &pushConstants);
 			vkCmdDrawIndexed(commandBuffer, 6, 1, BUFFER_OFFSET_INDEX_QUADS / sizeof(uint16_t), 0, 0);
-
-			Vec3 portalNormal = vec3TransformQuat((Vec3){ 0.f, 0.f, 1.f }, portal->transform.rotation);
-			Vec3 linkNormal = vec3TransformQuat((Vec3){ 0.f, 0.f, 1.f }, link->transform.rotation);
-			Vec4 newClippingPlane = { linkNormal.x, linkNormal.y, linkNormal.z, -vec3Dot(link->transform.translation, linkNormal) };
-			if (vec3Dot(portalNormal, camera.position) > vec3Dot(portal->transform.translation, portalNormal))
+			Vec3 portalNormal = vec3TransformQuat((Vec3){ 0.f, 0.f, 1.f }, portal->rotation);
+			Vec3 linkNormal = vec3TransformQuat((Vec3){ 0.f, 0.f, 1.f }, link->rotation);
+			Vec4 newClippingPlane = { linkNormal.x, linkNormal.y, linkNormal.z, -vec3Dot(link->translation, linkNormal) };
+			if (vec3Dot(portalNormal, camera.position) > vec3Dot(portal->translation, portalNormal))
 				newClippingPlane *= -1.f;
-
 			drawScene(commandBuffer, portalCamera, newClippingPlane, recursionDepth + 1, portal->link);
-
 			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.portalDepthWrite);
 			pushConstants.mvp = portalMVP;
-			vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pushConstants), &pushConstants);
+			vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(struct PushConstants), &pushConstants);
 			vkCmdDrawIndexed(commandBuffer, 6, 1, BUFFER_OFFSET_INDEX_QUADS / sizeof(uint16_t), 0, 0);
 		}
 	}
-
 	vkCmdSetStencilReference(commandBuffer, VK_STENCIL_FACE_FRONT_AND_BACK, recursionDepth);
 	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.triangle);
 	vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Vec4), &clippingPlane);
-
 	for (uint32_t i = 0; i < drawCount; i++) {
 		// todo: culling
 		instances[instanceCount].mvp = viewProjection * draws[i].model;
 		instances[instanceCount].material = materials[draws[i].primitive->material];
 		vkCmdDrawIndexed(commandBuffer, draws[i].primitive->indexCount, 1, draws[i].primitive->firstIndex, draws[i].primitive->vertexOffset, instanceCount++);
 	}
-
 	vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Mat4), &viewProjection);
 	vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.skybox);
 	vkCmdDraw(commandBuffer, 3, 1, 0, 0);
 }
-
-static const GUID CLSID_MMDeviceEnumerator = { 0xbcde0395, 0xe52f, 0x467c, { 0x8e, 0x3d, 0xc4, 0x57, 0x92, 0x91, 0x69, 0x2e } };
-static const GUID IID_IMMDeviceEnumerator = { 0xa95664d2, 0x9614, 0x4f35, { 0xa7, 0x46, 0xde, 0x8d, 0xb6, 0x36, 0x17, 0xe6 } };
-static const GUID IID_IAudioClient = { 0x1cb9ad4c, 0xdbfa, 0x4c32, { 0xb1, 0x78, 0xc2, 0xf5, 0x68, 0xa7, 0x03, 0xb2 } };
-static const GUID IID_IAudioRenderClient = { 0xf294acfc, 0x3146, 0x4483, { 0xa7, 0xbf, 0xad, 0xdc, 0xa7, 0xc2, 0x60, 0xe2 } };
-
 void WinMainCRTStartup(void) {
-	uint64_t ticksElapsed = 0;
-	uint32_t frame = 0;
-	LARGE_INTEGER countsPerSecond;
 	QueryPerformanceFrequency(&countsPerSecond);
-	float countsPerTick = (float)countsPerSecond.QuadPart / TICKS_PER_SECOND;
-
-	portals[0].transform.rotation = quatFromAxisAngle((Vec3){ 0.f, 1.f, 0.f }, M_PI * 0.5f);
-
+	portals[0].rotation = quatFromAxisAngle((Vec3){ 0.f, 1.f, 0.f }, M_PI * 0.5f);
 	hInstance = GetModuleHandleW(NULL);
 	mainFiber = ConvertThreadToFiber(NULL);
-	LPVOID messageFiber = CreateFiber(0, messageFiberProc, NULL);
 	WNDCLASSEXW windowClass = {
 		.cbSize = sizeof(WNDCLASSEXW),
 		.lpfnWndProc = wndProc,
@@ -927,41 +720,29 @@ void WinMainCRTStartup(void) {
 		.hCursor = LoadImageW(NULL, MAKEINTRESOURCEW(OCR_NORMAL), IMAGE_CURSOR, 0, 0, LR_SHARED)
 	};
 	RegisterClassExW(&windowClass);
-	CreateWindowExW(0, windowClass.lpszClassName, L"Triangle", WS_VISIBLE | WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, NULL, NULL, windowClass.hInstance, NULL);
-
-	VkQueue queue;
-	VkCommandPool commandPools[FRAMES_IN_FLIGHT];
-	VkCommandBuffer commandBuffers[FRAMES_IN_FLIGHT];
-	VkFence fences[FRAMES_IN_FLIGHT];
-	VkSemaphore imageAcquireSemaphores[FRAMES_IN_FLIGHT];
-	VkSemaphore semaphores[FRAMES_IN_FLIGHT];
+	CreateWindowExW(0, windowClass.lpszClassName, L"BaddestBoss123 Game", WS_VISIBLE | WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, NULL, NULL, windowClass.hInstance, NULL);
 	vkGetDeviceQueue(device, queueFamilyIndex, 0, &queue);
 	for (uint32_t i = 0; i < FRAMES_IN_FLIGHT; i++) {
 		vkCreateCommandPool(device, &(VkCommandPoolCreateInfo){
 			.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
 			.queueFamilyIndex = queueFamilyIndex
 		}, NULL, &commandPools[i]);
-
 		vkAllocateCommandBuffers(device, &(VkCommandBufferAllocateInfo){
 			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
 			.commandPool = commandPools[i],
 			.commandBufferCount = 1
 		}, &commandBuffers[i]);
-
 		vkCreateFence(device, &(VkFenceCreateInfo){
 			.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
 			.flags = i > 0 ? VK_FENCE_CREATE_SIGNALED_BIT : 0
 		}, NULL, &fences[i]);
-
 		vkCreateSemaphore(device, &(VkSemaphoreCreateInfo){
 			.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO
 		}, NULL, &imageAcquireSemaphores[i]);
-
 		vkCreateSemaphore(device, &(VkSemaphoreCreateInfo){
 			.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO
 		}, NULL, &semaphores[i]);
 	}
-
 	for (uint32_t i = 0; i < sizeof(buffers) / sizeof(struct Buffer); i++) {
 		struct Buffer* b = (struct Buffer*)((char*)&buffers + (i * sizeof(struct Buffer)));
 		vkCreateBuffer(device, &(VkBufferCreateInfo){
@@ -969,10 +750,7 @@ void WinMainCRTStartup(void) {
 			.size = b->size,
 			.usage = b->usage
 		}, NULL, &b->buffer);
-
-		VkMemoryRequirements memoryRequirements;
 		vkGetBufferMemoryRequirements(device, b->buffer, &memoryRequirements);
-
 		vkAllocateMemory(device, &(VkMemoryAllocateInfo){
 			.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
 			.pNext = &(VkMemoryDedicatedAllocateInfo){
@@ -980,22 +758,16 @@ void WinMainCRTStartup(void) {
 				.buffer = b->buffer
 			},
 			.allocationSize = memoryRequirements.size,
-			.memoryTypeIndex = getMemoryTypeIndex(memoryRequirements.memoryTypeBits, b->requiredMemoryPropertyFlagBits, b->optionalMemoryPropertyFlagBits)
+			.memoryTypeIndex = getMemoryTypeIndex(b->requiredMemoryPropertyFlagBits, b->optionalMemoryPropertyFlagBits)
 		}, NULL, &b->deviceMemory);
-
 		vkBindBufferMemory(device, b->buffer, b->deviceMemory, 0);
-
 		if (b->requiredMemoryPropertyFlagBits & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
 			vkMapMemory(device, b->deviceMemory, 0, VK_WHOLE_SIZE, 0, &b->data);
 	}
-
-	VkDeviceSize stagingBufferDataOffset = 0;
 	memcpy(buffers.staging.data + stagingBufferDataOffset, &incbin_vertices_start, ((char*)&incbin_vertices_end - (char*)&incbin_vertices_start)); stagingBufferDataOffset += BUFFER_RANGE_VERTEX_POSITIONS;
 	memcpy(buffers.staging.data + stagingBufferDataOffset, &incbin_attributes_start, ((char*)&incbin_attributes_end - (char*)&incbin_attributes_start)); stagingBufferDataOffset += BUFFER_RANGE_VERTEX_ATTRIBUTES;
 	memcpy(buffers.staging.data + stagingBufferDataOffset, &incbin_indices_start, ((char*)&incbin_indices_end - (char*)&incbin_indices_start)); stagingBufferDataOffset += BUFFER_RANGE_INDEX_VERTICES;
-
-	uint16_t* quadIndices = (uint16_t*)(buffers.staging.data + stagingBufferDataOffset);
-	stagingBufferDataOffset += BUFFER_RANGE_INDEX_QUADS;
+	uint16_t* quadIndices = (uint16_t*)(buffers.staging.data + stagingBufferDataOffset); stagingBufferDataOffset += BUFFER_RANGE_INDEX_QUADS;
 	for (uint32_t i = 0; i < BUFFER_RANGE_INDEX_QUADS; i += 6) {
 		quadIndices[i + 0] = (4 * (i / 6)) + 0;
 		quadIndices[i + 1] = (4 * (i / 6)) + 1;
@@ -1004,84 +776,59 @@ void WinMainCRTStartup(void) {
 		quadIndices[i + 4] = (4 * (i / 6)) + 1;
 		quadIndices[i + 5] = (4 * (i / 6)) + 3;
 	}
-
-	VkImage images[_countof(ktx2Images)];
-	VkMemoryRequirements imageMemoryRequirements[_countof(ktx2Images)];
-	VkDescriptorImageInfo ktx2DescriptorImageInfos[_countof(ktx2Images)];
-	VkImageMemoryBarrier imageMemoryBarriers1[_countof(ktx2Images)];
-	VkImageMemoryBarrier imageMemoryBarriers2[_countof(ktx2Images)];
-	VkDeviceMemory imageMemory;
-	VkDeviceSize imageAllocationSize = 0;
-	for (uint32_t i = 0; i < _countof(ktx2Images); i++) {
+	for (uint32_t i = 0; i < _countof(ktx2ImageFiles); i++) {
 		vkCreateImage(device, &(VkImageCreateInfo){
 			.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
 			.imageType = VK_IMAGE_TYPE_2D,
-			.format = ktx2Images[i]->vkFormat,
+			.format = ktx2ImageFiles[i]->vkFormat,
 			.extent = {
-				.width = ktx2Images[i]->pixelWidth,
-				.height = ktx2Images[i]->pixelHeight,
+				.width = ktx2ImageFiles[i]->pixelWidth,
+				.height = ktx2ImageFiles[i]->pixelHeight,
 				.depth = 1
 			},
-			.mipLevels = ktx2Images[i]->levelCount,
+			.mipLevels = ktx2ImageFiles[i]->levelCount,
 			.arrayLayers = 1,
 			.samples = VK_SAMPLE_COUNT_1_BIT,
 			.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-		}, NULL, &images[i]);
-		vkGetImageMemoryRequirements(device, images[i], &imageMemoryRequirements[i]);
-		imageAllocationSize += ALIGN_FORWARD(imageMemoryRequirements[i].size, imageMemoryRequirements[i].alignment);
-
-		imageMemoryBarriers1[i] = (VkImageMemoryBarrier){
+		}, NULL, &ktx2Images[i]);
+		vkGetImageMemoryRequirements(device, ktx2Images[i], &memoryRequirements);
+		ktx2ImageAllocationSize += ALIGN_FORWARD(memoryRequirements.size, physicalDeviceProperties.limits.bufferImageGranularity);
+		ktx2ImageMemoryBarriers[i] = (VkImageMemoryBarrier){
 			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
 			.srcAccessMask = VK_ACCESS_NONE,
 			.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
 			.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
 			.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-			.image = images[i],
+			.image = ktx2Images[i],
 			.subresourceRange = {
 				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-				.levelCount = ktx2Images[i]->levelCount,
-				.layerCount = 1
-			}
-		};
-		imageMemoryBarriers2[i] = (VkImageMemoryBarrier){
-			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-			.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-			.dstAccessMask = VK_ACCESS_NONE,
-			.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-			.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-			.image = images[i],
-			.subresourceRange = {
-				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-				.levelCount = ktx2Images[i]->levelCount,
+				.levelCount = ktx2ImageFiles[i]->levelCount,
 				.layerCount = 1
 			}
 		};
 	}
 	vkAllocateMemory(device, &(VkMemoryAllocateInfo){
 		.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-		.memoryTypeIndex = getMemoryTypeIndex(imageMemoryRequirements[0].memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0),
-		.allocationSize = imageAllocationSize
-	}, NULL, &imageMemory);
-
-	VkDeviceSize imageMemoryOffset = 0;
-	for (uint32_t i = 0; i < _countof(ktx2Images); i++) {
-		vkBindImageMemory(device, images[i], imageMemory, imageMemoryOffset);
-		imageMemoryOffset += ALIGN_FORWARD(imageMemoryRequirements[i].size, imageMemoryRequirements[i].alignment);
-
+		.memoryTypeIndex = getMemoryTypeIndex(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0),
+		.allocationSize = ktx2ImageAllocationSize
+	}, NULL, &ktx2ImageMemory);
+	for (uint32_t i = 0; i < _countof(ktx2ImageFiles); i++) {
+		vkBindImageMemory(device, ktx2Images[i], ktx2ImageMemory, ktx2ImageMemoryOffset);
+		vkGetImageMemoryRequirements(device, ktx2Images[i], &memoryRequirements);
+		ktx2ImageMemoryOffset += ALIGN_FORWARD(memoryRequirements.size, physicalDeviceProperties.limits.bufferImageGranularity);
 		vkCreateImageView(device, &(VkImageViewCreateInfo){
 			.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-			.image = images[i],
+			.image = ktx2Images[i],
 			.viewType = VK_IMAGE_VIEW_TYPE_2D,
-			.format = ktx2Images[i]->vkFormat,
+			.format = ktx2ImageFiles[i]->vkFormat,
 			.subresourceRange = {
 				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-				.levelCount = ktx2Images[i]->levelCount,
+				.levelCount = ktx2ImageFiles[i]->levelCount,
 				.layerCount = 1
 			}
 		}, NULL, &ktx2DescriptorImageInfos[i].imageView);
 		ktx2DescriptorImageInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	}
-
 	vkBeginCommandBuffer(commandBuffers[frame], &(VkCommandBufferBeginInfo){
 		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
 		.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
@@ -1108,12 +855,11 @@ void WinMainCRTStartup(void) {
 			.size = BUFFER_RANGE_INDEX_QUADS
 		}
 	});
-
-	vkCmdPipelineBarrier(commandBuffers[frame], VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, _countof(imageMemoryBarriers1), imageMemoryBarriers1);
+	vkCmdPipelineBarrier(commandBuffers[frame], VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, _countof(ktx2ImageMemoryBarriers), ktx2ImageMemoryBarriers);
 	for (uint32_t i = 0; i < _countof(ktx2Images); i++) {
 		VkBufferImageCopy bufferImageCopies[16];
-		for (uint32_t j = 0; j < ktx2Images[i]->levelCount; j++) {
-			memcpy(buffers.staging.data + stagingBufferDataOffset, (char*)ktx2Images[i] + ktx2Images[i]->levels[j].byteOffset, ktx2Images[i]->levels[j].byteLength);
+		for (uint32_t j = 0; j < ktx2ImageFiles[i]->levelCount; j++) {
+			memcpy(buffers.staging.data + stagingBufferDataOffset, (char*)ktx2ImageFiles[i] + ktx2ImageFiles[i]->levels[j].byteOffset, ktx2ImageFiles[i]->levels[j].byteLength);
 			bufferImageCopies[j] = (VkBufferImageCopy){
 				.bufferOffset = stagingBufferDataOffset,
 				.imageSubresource = {
@@ -1122,39 +868,44 @@ void WinMainCRTStartup(void) {
 					.layerCount = 1
 				},
 				.imageExtent = {
-					.width = ktx2Images[i]->pixelWidth >> j,
-					.height = ktx2Images[i]->pixelHeight >> j,
+					.width = ktx2ImageFiles[i]->pixelWidth >> j,
+					.height = ktx2ImageFiles[i]->pixelHeight >> j,
 					.depth = 1
 				}
 			};
-			stagingBufferDataOffset += ALIGN_FORWARD(ktx2Images[i]->levels[j].byteLength, 16);
+			stagingBufferDataOffset += ALIGN_FORWARD(ktx2ImageFiles[i]->levels[j].byteLength, physicalDeviceProperties.limits.optimalBufferCopyOffsetAlignment);
 		}
-		vkCmdCopyBufferToImage(commandBuffers[frame], buffers.staging.buffer, images[i], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, ktx2Images[i]->levelCount, bufferImageCopies);
+		vkCmdCopyBufferToImage(commandBuffers[frame], buffers.staging.buffer, ktx2Images[i], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, ktx2ImageFiles[i]->levelCount, bufferImageCopies);
+		ktx2ImageMemoryBarriers[i] = (VkImageMemoryBarrier){
+			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+			.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+			.dstAccessMask = VK_ACCESS_NONE,
+			.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			.image = ktx2Images[i],
+			.subresourceRange = {
+				.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+				.levelCount = ktx2ImageFiles[i]->levelCount,
+				.layerCount = 1
+			}
+		};
 	}
-	vkCmdPipelineBarrier(commandBuffers[frame], VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, _countof(imageMemoryBarriers2), imageMemoryBarriers2);
-
+	vkCmdPipelineBarrier(commandBuffers[frame], VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, _countof(ktx2ImageMemoryBarriers), ktx2ImageMemoryBarriers);
 	vkEndCommandBuffer(commandBuffers[frame]);
 	vkQueueSubmit(queue, 1, &(VkSubmitInfo){
 		.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
 		.commandBufferCount = 1,
 		.pCommandBuffers = &commandBuffers[frame]
 	}, fences[frame]);
-
 	vkUpdateDescriptorSets(device, 1, &(VkWriteDescriptorSet){
 		.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
 		.dstSet = descriptorSet,
-		.dstBinding = 1,
+		.dstBinding = 0,
 		.dstArrayElement = 0,
 		.descriptorCount = _countof(ktx2Images),
 		.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 		.pImageInfo = ktx2DescriptorImageInfos
 	}, 0, NULL);
-
-	VkImage shadowImage;
-	VkDeviceMemory shadowImageMemory;
-	VkImageView shadowImageView;
-	VkFramebuffer shadowFramebuffer;
-	VkRenderPass renderPassShadow;
 	vkCreateImage(device, &(VkImageCreateInfo){
 		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
 		.imageType = VK_IMAGE_TYPE_2D,
@@ -1169,7 +920,6 @@ void WinMainCRTStartup(void) {
 		.samples = VK_SAMPLE_COUNT_1_BIT,
 		.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
 	}, NULL, &shadowImage);
-	VkMemoryRequirements memoryRequirements;
 	vkGetImageMemoryRequirements(device, shadowImage, &memoryRequirements);
 	vkAllocateMemory(device, &(VkMemoryAllocateInfo){
 		.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
@@ -1178,7 +928,7 @@ void WinMainCRTStartup(void) {
 			.image = shadowImage
 		},
 		.allocationSize = memoryRequirements.size,
-		.memoryTypeIndex = getMemoryTypeIndex(memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0)
+		.memoryTypeIndex = getMemoryTypeIndex(VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0)
 	}, NULL, &shadowImageMemory);
 	vkBindImageMemory(device, shadowImage, shadowImageMemory, 0);
 	vkCreateImageView(device, &(VkImageViewCreateInfo){
@@ -1192,7 +942,6 @@ void WinMainCRTStartup(void) {
 			.layerCount = 1
 		}
 	}, NULL, &shadowImageView);
-
 	vkCreateRenderPass(device, &(VkRenderPassCreateInfo){
 		.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
 		.attachmentCount = 1,
@@ -1225,7 +974,6 @@ void WinMainCRTStartup(void) {
 			.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT
 		}
 	}, NULL, &renderPassShadow);
-
 	vkCreateFramebuffer(device, &(VkFramebufferCreateInfo){
 		.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
 		.renderPass = renderPassShadow,
@@ -1235,7 +983,6 @@ void WinMainCRTStartup(void) {
 		.height = SHADOW_MAP_RESOLUTION,
 		.layers = 1
 	}, NULL, &shadowFramebuffer);
-
 	vkCreatePipelineLayout(device, &(VkPipelineLayoutCreateInfo){
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
 		.setLayoutCount = 1,
@@ -1244,28 +991,14 @@ void WinMainCRTStartup(void) {
 		.pPushConstantRanges = &(VkPushConstantRange){
 			.stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
 			.offset = 0,
-			.size = sizeof(Mat4) + sizeof(Vec4)
+			.size = sizeof(struct PushConstants)
 		}
 	}, NULL, &pipelineLayout);
-
-	VkShaderModule shaderModule;
-	VkShaderModule blitFrag;
-	VkShaderModule triangleVert;
-	VkShaderModule triangleFrag;
-	VkShaderModule skyboxFrag;
-	VkShaderModule particleVert;
-	VkShaderModule particleFrag;
-	VkShaderModule shadowVert;
 	vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
 		.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
 		.pCode = (uint32_t*)&incbin_shaders_spv_start,
 		.codeSize = (char*)&incbin_shaders_spv_end - (char*)&incbin_shaders_spv_start
 	}, NULL, &shaderModule);
-	vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
-		.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-		.pCode = blit_frag,
-		.codeSize = sizeof(blit_frag)
-	}, NULL, &blitFrag);
 	vkCreateShaderModule(device, &(VkShaderModuleCreateInfo){
 		.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
 		.pCode = triangle_vert,
@@ -1296,20 +1029,6 @@ void WinMainCRTStartup(void) {
 		.pCode = shadow_vert,
 		.codeSize = sizeof(shadow_vert)
 	}, NULL, &shadowVert);
-
-	VkPipelineShaderStageCreateInfo shaderStagesBlit[] = {
-		{
-			.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-			.stage = VK_SHADER_STAGE_VERTEX_BIT,
-			.module = shaderModule,
-			.pName = "blit_vert"
-		}, {
-			.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-			.stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-			.module = blitFrag,
-			.pName = "main"
-		}
-	};
 	VkPipelineShaderStageCreateInfo shaderStagesTriangle[] = {
 		{
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -1547,9 +1266,6 @@ void WinMainCRTStartup(void) {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
 		.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT
 	};
-	VkPipelineDepthStencilStateCreateInfo depthStencilStateNone = {
-		.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-	};
 	VkPipelineDepthStencilStateCreateInfo depthStencilStateTriangle = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
 		.depthTestEnable = VK_TRUE,
@@ -1691,23 +1407,8 @@ void WinMainCRTStartup(void) {
 			VK_DYNAMIC_STATE_STENCIL_REFERENCE
 		}
 	};
-
 	vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, sizeof(pipelines) / sizeof(VkPipeline), (VkGraphicsPipelineCreateInfo[]){
-		{ // blit
-			.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-			.stageCount = _countof(shaderStagesBlit),
-			.pStages = shaderStagesBlit,
-			.pVertexInputState = &vertexInputStateNone,
-			.pInputAssemblyState = &inputAssemblyState,
-			.pViewportState = &viewportState,
-			.pRasterizationState = &rasterizationStateNone,
-			.pMultisampleState = &multisampleState,
-			.pDepthStencilState = &depthStencilStateNone,
-			.pColorBlendState = &colorBlendState,
-			.pDynamicState = &dynamicState,
-			.layout = pipelineLayout,
-			.renderPass = renderPassBlit
-		}, { // triangle
+		{ // triangle
 			.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
 			.stageCount = _countof(shaderStagesTriangle),
 			.pStages = shaderStagesTriangle,
@@ -1807,27 +1508,17 @@ void WinMainCRTStartup(void) {
 			.renderPass = renderPassShadow
 		}
 	}, NULL, (VkPipeline*)&pipelines);
-
 	extern void abc(void);
 	abc();
-
-	WSADATA wsaData;
 	WSAStartup(MAKEWORD(2, 2), &wsaData);
 	SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
 	ioctlsocket(sock, FIONBIO, &(u_long){ 1 });
-
 	struct sockaddr_in servaddr = {
 		.sin_family = AF_INET,
 		.sin_port = htons(8080)
 	};
 	inet_pton(AF_INET, "78.141.219.44", &servaddr.sin_addr);
-
 	CoInitializeEx(NULL, COINIT_SPEED_OVER_MEMORY);
-	IMMDeviceEnumerator* enumerator;
-	IMMDevice* audioDevice;
-	IAudioClient* audioClient;
-	IAudioRenderClient* audioRenderClient;
-	UINT32 bufferSize;
 	WAVEFORMATEX waveFormat = {
 		.wFormatTag = WAVE_FORMAT_PCM,
 		.nChannels = 2,
@@ -1836,31 +1527,25 @@ void WinMainCRTStartup(void) {
 	};
 	waveFormat.nBlockAlign = (waveFormat.nChannels * waveFormat.wBitsPerSample) / 8;
 	waveFormat.nAvgBytesPerSec = waveFormat.nSamplesPerSec * waveFormat.nBlockAlign;
-
 	CoCreateInstance(&CLSID_MMDeviceEnumerator, NULL, CLSCTX_ALL, &IID_IMMDeviceEnumerator, (void**)&enumerator);
 	enumerator->lpVtbl->GetDefaultAudioEndpoint(enumerator, eRender, eConsole, &audioDevice);
 	audioDevice->lpVtbl->Activate(audioDevice, &IID_IAudioClient, CLSCTX_ALL, NULL, (void**)&audioClient);
 	audioClient->lpVtbl->Initialize(audioClient, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, 10000000, 0, &waveFormat, NULL);
 	audioClient->lpVtbl->GetService(audioClient, &IID_IAudioRenderClient, (void**)&audioRenderClient);
-	audioClient->lpVtbl->GetBufferSize(audioClient, &bufferSize);
+	audioClient->lpVtbl->GetBufferSize(audioClient, &audioBufferSize);
 	audioClient->lpVtbl->Start(audioClient);
-
 	Vec3 previousPlayerTranslation = { 0 }; // TODO: ugly
-
 	sendto(sock, (char*)&(struct ClientMessageID){
 		.clientID = -1,
 		.header = CLIENT_MESSAGE_ID
 	}, sizeof(struct ClientMessageID), 0, (struct sockaddr*)&servaddr, sizeof(struct sockaddr_in));
-
-	LARGE_INTEGER start;
+	LPVOID messageFiber = CreateFiber(0, messageFiberProc, NULL);
 	QueryPerformanceCounter(&start);
 	for (;;) {
 		SwitchToFiber(messageFiber);
-
 		static char buffer[16 * 1024 * 1024];
 		while (recv(sock, buffer, sizeof(buffer), 0) > 0) {
 			uint16_t header = ((uint16_t*)buffer)[0];
-
 			switch (header) {
 				case SERVER_MESSAGE_ID: {
 					struct ServerMessageID* message = (struct ServerMessageID*)buffer;
@@ -1869,26 +1554,19 @@ void WinMainCRTStartup(void) {
 				} break;
 				case SERVER_MESSAGE_UPDATE: {
 					struct ServerMessageUpdate* message = (struct ServerMessageUpdate*)buffer;
-
 					for (uint32_t i = 0; i < message->entityCount; i++) {
 						struct ServerEntity* entity = &message->entities[i];
-
 						if (entity->flags & ENTITY_CREATED) {
-							OutputDebugStringA("creating entity\n");
 							entityMap[entity->entityID] = (struct Entity){
-								.transform = {
-									.translation = { entity->x, entity->y, entity->z },
-									.rotation = { entity->rx, entity->ry, entity->rz, entity->rw },
-									.scale = { entity->sx, entity->sy, entity->sz }
-								},
+								.translation = { entity->x, entity->y, entity->z },
+								.velocity = { entity->vx, entity->vy, entity->vz },
+								.rotation = { entity->rx, entity->ry, entity->rz, entity->rw },
+								.scale = { entity->sx, entity->sy, entity->sz },
 								.speed = entity->speed,
 								.mesh = entity->entityID == entityID ? MESH_NONE : entity->mesh
 							};
 							entities[entityCount++] = entity->entityID;
-
 						} else if (entity->flags & ENTITY_DESTROYED) {
-							OutputDebugStringA("deleting entity\n");
-							// TODO: get rid of this loop
 							for (uint32_t i = 0; i < entityCount; i++) {
 								if (entities[i] == entity->entityID) {
 									entities[i] = entities[--entityCount];
@@ -1899,170 +1577,136 @@ void WinMainCRTStartup(void) {
 							entityMap[entity->entityID].speed = entity->speed;
 							if (entity->entityID == entityID)
 								continue;
-
-							entityMap[entity->entityID].transform.translation = (Vec3){ entity->x, entity->y, entity->z };
-							entityMap[entity->entityID].transform.rotation = (Quat){ entity->rx, entity->ry, entity->rz, entity->rw };
-							entityMap[entity->entityID].transform.scale = (Vec3){ entity->sx, entity->sy, entity->sz };
+							entityMap[entity->entityID].translation = (Vec3){ entity->x, entity->y, entity->z };
+							entityMap[entity->entityID].velocity = (Vec3){ entity->vx, entity->vy, entity->vz };
+							entityMap[entity->entityID].rotation = (Quat){ entity->rx, entity->ry, entity->rz, entity->rw };
+							entityMap[entity->entityID].scale = (Vec3){ entity->sx, entity->sy, entity->sz };
 							entityMap[entity->entityID].mesh = entity->mesh;
 						}
 					}
 				} break;
 			}
 		}
-
-		float interpolationFactor;
-		#define extrapolationFactor interpolationFactor
-
 		while (({
 			LARGE_INTEGER now;
 			QueryPerformanceCounter(&now);
 			uint64_t countsElapsed = now.QuadPart - start.QuadPart;
 			uint64_t targetTicksElapsed = (countsElapsed * TICKS_PER_SECOND) / countsPerSecond.QuadPart;
-
-			interpolationFactor = (float)(countsElapsed - (targetTicksElapsed * countsPerTick)) / countsPerTick;
+			float countsPerTick = (float)countsPerSecond.QuadPart / TICKS_PER_SECOND;
+			smoothFactor = (float)(countsElapsed - (targetTicksElapsed * countsPerTick)) / countsPerTick;
 			ticksElapsed < targetTicksElapsed;
 		})) {
 			if (entityID != -1) {
 				struct Entity* player = &entityMap[entityID];
-				previousPlayerTranslation = player->transform.translation;
-
+				previousPlayerTranslation = player->translation;
 				Vec3 forwardMovement = { 0 };
 				Vec3 sidewaysMovement = { 0 };
-
 				if ((input & INPUT_START_FORWARD) && !(input & INPUT_START_BACK))
-					forwardMovement = vec3Normalize(-(Vec3){ camera.forward.x, 0.f, camera.forward.z });
+					forwardMovement = -(Vec3){ camera.forward.x, 0.f, camera.forward.z };
 				else if ((input & INPUT_START_BACK) && !(input & INPUT_START_FORWARD))
-					forwardMovement = vec3Normalize((Vec3){ camera.forward.x, 0.f, camera.forward.z });
-
+					forwardMovement = (Vec3){ camera.forward.x, 0.f, camera.forward.z };
 				if ((input & INPUT_START_LEFT) && !(input & INPUT_START_RIGHT))
-					sidewaysMovement = vec3Normalize(-(Vec3){ camera.right.x, 0.f, camera.right.z });
+					sidewaysMovement = -(Vec3){ camera.right.x, 0.f, camera.right.z };
 				else if ((input & INPUT_START_RIGHT) && !(input & INPUT_START_LEFT))
-					sidewaysMovement = vec3Normalize((Vec3){ camera.right.x, 0.f, camera.right.z });
-
+					sidewaysMovement = (Vec3){ camera.right.x, 0.f, camera.right.z };
 				if ((input & INPUT_START_UP) && !(input & INPUT_START_DOWN))
-					player->transform.translation.y += 0.09f;
+					player->translation.y += 0.09f;
 				else if ((input & INPUT_START_DOWN) && !(input & INPUT_START_UP))
-					player->transform.translation.y -= 0.09f;
-
+					player->translation.y -= 0.09f;
 				if (input & INPUT_STOP_FORWARD) input &= ~(INPUT_START_FORWARD | INPUT_STOP_FORWARD);
 				if (input & INPUT_STOP_BACK) input &= ~(INPUT_START_BACK | INPUT_STOP_BACK);
 				if (input & INPUT_STOP_LEFT) input &= ~(INPUT_START_LEFT | INPUT_STOP_LEFT);
 				if (input & INPUT_STOP_RIGHT) input &= ~(INPUT_START_RIGHT | INPUT_STOP_RIGHT);
 				if (input & INPUT_STOP_DOWN) input &= ~(INPUT_START_DOWN | INPUT_STOP_DOWN);
 				if (input & INPUT_STOP_UP) input &= ~(INPUT_START_UP | INPUT_STOP_UP);
-
-				player->transform.translation += player->speed * forwardMovement;
-				player->transform.translation += player->speed * sidewaysMovement;
-
-				Vec3 direction = player->transform.translation - previousPlayerTranslation;
-
-				if (vec3Length(direction) > 0.f) {
-					direction = vec3Normalize(direction);
-
+				player->velocity = (Vec3){ 0.f };
+				player->velocity += player->speed * forwardMovement;
+				player->velocity += player->speed * sidewaysMovement;
+				player->translation += player->velocity;
+				if (vec3Length(player->velocity) > 0.f) {
+					Vec3 direction = vec3Normalize(player->velocity);
 					for (uint32_t i = 0; i < _countof(portals); i++) {
 						struct Portal* portal = &portals[i];
-
-						Vec3 normal = vec3TransformQuat((Vec3){ 0.f, 0.f, 1.f }, portal->transform.rotation);
-						Vec4 plane = { normal.x, normal.y, normal.z, fabs(vec3Dot((Vec3){ 0 }, normal)) };
-
+						Vec3 normal = vec3TransformQuat((Vec3){ 0.f, 0.f, 1.f }, portal->rotation);
+						Vec4 plane = { normal.x, normal.y, normal.z, -vec3Dot(portal->translation, normal) };
 						float t = rayPlane(previousPlayerTranslation, direction, plane);
-
 						if (t > 1.f || t < 0.f)
 							continue;
-
-						Vec3 hit = previousPlayerTranslation + direction * t;
-						hit -= portal->transform.translation;
-						hit = vec3TransformQuat(hit, quatConjugate(portal->transform.rotation));
-
-						if (fabs(hit.x) > portal->transform.scale.x || fabs(hit.y) > portal->transform.scale.y)
+						Vec3 hitPosition = vec3TransformQuat((previousPlayerTranslation + direction * t) - portal->translation, quatConjugate(portal->rotation));
+						if (fabs(hitPosition.x) > portal->scale.x || fabs(hitPosition.y) > portal->scale.y)
 							continue;
-
-						struct Portal* link = &portals[portal->link];
-						Quat q = quatMultiply(link->transform.rotation, quatConjugate(portal->transform.rotation));
-						player->transform.translation = link->transform.translation + vec3TransformQuat(player->transform.translation - portal->transform.translation, q);
-
 						OutputDebugStringA("traveling through portal\n");
-
-						// TODO: pitch/roll?
-						float sinp = 2 * (q.w * q.y - q.z * q.x);
-						if (fabs(sinp) >= 1.f)
-							yaw += copysignf((float)M_PI * 0.5f, sinp); // use 90 degrees if out of range
-						else
-							yaw += asinf(sinp);
-
-						previousPlayerTranslation = player->transform.translation;
+						struct Portal* link = &portals[portal->link];
+						Vec3 linkNormal = vec3TransformQuat((Vec3){ 0.f, 0.f, 1.f }, link->rotation);
+						player->translation = link->translation + vec3TransformQuat(player->translation - portal->translation, quatConjugate(portal->rotation));
+						Vec3 newDirection = vec3TransformQuat(direction, quatMultiply(quatConjugate(portal->rotation), link->rotation));
+						yaw += atan2f(linkNormal.x * newDirection.z - linkNormal.z * newDirection.x, linkNormal.x * linkNormal.x + newDirection.z * newDirection.z);
+						previousPlayerTranslation = player->translation;
 						break;
 					}
 				}
-
 				sendto(sock, (char*)&(struct ClientMessageUpdate){
 					.clientID = clientID,
 					.header = CLIENT_MESSAGE_UPDATE,
-					.x = entityMap[entityID].transform.translation.x,
-					.y = entityMap[entityID].transform.translation.y,
-					.z = entityMap[entityID].transform.translation.z,
-					.rx = entityMap[entityID].transform.rotation.x,
-					.ry = entityMap[entityID].transform.rotation.y,
-					.rz = entityMap[entityID].transform.rotation.z,
-					.rw = entityMap[entityID].transform.rotation.w,
-					.sx = entityMap[entityID].transform.scale.x,
-					.sy = entityMap[entityID].transform.scale.y,
-					.sz = entityMap[entityID].transform.scale.z
+					.x = entityMap[entityID].translation.x,
+					.y = entityMap[entityID].translation.y,
+					.z = entityMap[entityID].translation.z,
+					.rx = entityMap[entityID].rotation.x,
+					.ry = entityMap[entityID].rotation.y,
+					.rz = entityMap[entityID].rotation.z,
+					.rw = entityMap[entityID].rotation.w,
+					.sx = entityMap[entityID].scale.x,
+					.sy = entityMap[entityID].scale.y,
+					.sz = entityMap[entityID].scale.z
 				}, sizeof(struct ClientMessageUpdate), 0, (struct sockaddr*)&servaddr, sizeof(struct sockaddr_in));
 			}
-
 			ticksElapsed++;
 		}
-
 		if (minimized) {
 			Sleep(1);
 			continue;
 		}
-
+		pitch = CLAMP(pitch, -(float)M_PI * 0.4f, (float)M_PI * 0.3f);
+		yaw += (yaw > M_PI) ? -(float)M_PI * 2.f : (yaw < -M_PI) ? (float)M_PI * 2.f : 0.f;
+		float sp = sinf(pitch);
+		float cp = cosf(pitch);
+		float sy = sinf(yaw);
+		float cy = cosf(yaw);
+		camera.right = (Vec3){ cy, 0, -sy };
+		camera.up = (Vec3){ sy * sp, cp, cy * sp };
+		camera.forward = (Vec3){ sy * cp, -sp, cp * cy };
 		if (entityID != -1) {
-			struct Entity* player = &entityMap[entityID];
-			camera.position = player->transform.translation;//vec3Lerp(previousPlayerTranslation, player->transform.translation, interpolationFactor);
-
-			// travelPortal(player, camera.position, player->transform.translation);
+			Quat pitchQuat = quatFromAxisAngle((Vec3){ 1.f, 0.f, 0.f }, -pitch); // if the camera intersected the portal, move/rotate it just for the render but not permanently
+			Quat yawQuat = quatFromAxisAngle((Vec3){ 0.f, 1.f, 0.f }, -yaw);
+			entityMap[entityID].rotation = quatMultiply(yawQuat, pitchQuat);
+			camera.position = entityMap[entityID].translation; // vec3Lerp(previousPlayerTranslation, player->translation, smoothFactor);
 		}
-
 		// Vec3 sunDirection = vec3Normalize((Vec3){ 0.36f, 0.8f, 0.48f });
 		// Mat4 ortho = mat4Ortho(-50.f, 50.f, -50.f, 50.f, 1.f, 100.f);
-
-		// portals[0].transform.rotation = quatRotateY(portals[0].transform.rotation, 0.001);
-		// portals[1].transform.rotation = quatRotateY(portals[1].transform.rotation, -0.001);
-
+		// portals[0].rotation = quatRotateY(portals[0].rotation, 0.001);
+		// portals[1].rotation = quatRotateY(portals[1].rotation, -0.001);
 		drawCount = 0;
 		instanceCount = 0;
 		instances = buffers.instance.data + BUFFER_OFFSET_INSTANCES + (frame * BUFFER_RANGE_INSTANCES);
-
 		// struct Entity* tree[64];
 		// uint32_t childIndices[64];
 		// Mat4 transforms[64]; // todo: stack transforms
-
 		for (uint32_t i = 0; i < entityCount; i++) {
 			struct Entity* entity = &entityMap[entities[i]];
 			// uint32_t depth = 0;
-
 		// todo:
 			if (entity->mesh != MESH_NONE) {
 				for (uint32_t j = 0; j < meshes[entity->mesh].primitiveCount; j++) {
 					struct Primitive* primitive = &meshes[entity->mesh].primitives[j];
-
 					// todo: this code here doesn't work for rotated meshes idk why
-
 					Vec3 min = primitive->min;
 					Vec3 max = primitive->max;
-
-					// Vec3 center = 0.5 * (max + min);
-
-					Vec3 scale = entity->transform.scale * (max - min);
-					Vec3 translation = entity->transform.translation + (entity->transform.scale * min);
-					draws[drawCount].model = mat4FromRotationTranslationScale(entity->transform.rotation, translation, scale);
+					Vec3 scale = entity->scale * (max - min);
+					Vec3 translation = entity->translation + (entity->scale * min);
+					draws[drawCount].model = mat4FromRotationTranslationScale(entity->rotation, translation, scale);
 					draws[drawCount++].primitive = primitive;
 				}
 			}
-
 			// if (entity->childCount) {
 			// 	tree[depth] = entity;
 			// 	childIndices[depth] = 0;
@@ -2082,9 +1726,7 @@ void WinMainCRTStartup(void) {
 			// 		goto todo;
 			// }
 		}
-
-		uint32_t imageIndex;
-		vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, imageAcquireSemaphores[frame], VK_NULL_HANDLE, &imageIndex);
+		vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, imageAcquireSemaphores[frame], VK_NULL_HANDLE, &swapchainImageIndex);
 		vkWaitForFences(device, 1, &fences[frame], VK_TRUE, UINT64_MAX);
 		vkResetFences(device, 1, &fences[frame]);
 		vkResetCommandPool(device, commandPools[frame], 0);
@@ -2092,7 +1734,6 @@ void WinMainCRTStartup(void) {
 			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
 			.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
 		});
-
 		vkCmdBindDescriptorSets(commandBuffers[frame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 0, NULL);
 		vkCmdBindIndexBuffer(commandBuffers[frame], buffers.index.buffer, 0, VK_INDEX_TYPE_UINT16);
 		vkCmdBindVertexBuffers(commandBuffers[frame], 0, 4, (VkBuffer[]){
@@ -2106,7 +1747,6 @@ void WinMainCRTStartup(void) {
 			BUFFER_OFFSET_INSTANCES + (frame * BUFFER_RANGE_INSTANCES),
 			BUFFER_OFFSET_PARTICLES + (frame * BUFFER_RANGE_PARTICLES)
 		});
-
 		VkRect2D scissor = {
 			.extent.width = SHADOW_MAP_RESOLUTION,
 			.extent.height = SHADOW_MAP_RESOLUTION
@@ -2130,13 +1770,11 @@ void WinMainCRTStartup(void) {
 		// vkCmdBindPipeline(commandBuffers[frame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.shadow);
 		// for (uint32_t i = 0; i < drawCount; i++) {
 		// 	// todo: culling
-
 		// 	instances[instanceCount].mvp = ortho * draws[i].model;
 		// 	instances[instanceCount].material = materials[draws[i].primitive->material];
 		// 	vkCmdDrawIndexed(commandBuffers[frame], draws[i].primitive->indexCount, 1, draws[i].primitive->firstIndex, draws[i].primitive->vertexOffset, instanceCount++);
 		// }
 		vkCmdEndRenderPass(commandBuffers[frame]);
-
 		scissor.extent = surfaceCapabilities.currentExtent;
 		viewport.width = (float)surfaceCapabilities.currentExtent.width;
 		viewport.height = (float)surfaceCapabilities.currentExtent.height;
@@ -2145,22 +1783,12 @@ void WinMainCRTStartup(void) {
 		vkCmdBeginRenderPass(commandBuffers[frame], &(VkRenderPassBeginInfo){
 			.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
 			.renderPass = renderPass,
-			.framebuffer = framebuffer,
+			.framebuffer = swapchainFramebuffers[swapchainImageIndex],
 			.renderArea = scissor,
 			.clearValueCount = 2,
 			.pClearValues = (VkClearValue[]){ { 0 }, { 0 } }
 		}, VK_SUBPASS_CONTENTS_INLINE);
-		drawScene(commandBuffers[frame], camera, (Vec4){ 0.f, 0.f, 0.f, 0.f }, 0, -1);
-		vkCmdEndRenderPass(commandBuffers[frame]);
-
-		vkCmdBeginRenderPass(commandBuffers[frame], &(VkRenderPassBeginInfo){
-			.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-			.renderPass = renderPassBlit,
-			.framebuffer = swapchainFramebuffers[imageIndex],
-			.renderArea = scissor,
-		}, VK_SUBPASS_CONTENTS_INLINE);
-		vkCmdBindPipeline(commandBuffers[frame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelines.blit);
-		vkCmdDraw(commandBuffers[frame], 3, 1, 0, 0);
+		drawScene(commandBuffers[frame], camera, (Vec4){ 0 }, 0, -1);
 		vkCmdEndRenderPass(commandBuffers[frame]);
 		vkEndCommandBuffer(commandBuffers[frame]);
 		vkQueueSubmit(queue, 1, &(VkSubmitInfo){
@@ -2179,11 +1807,8 @@ void WinMainCRTStartup(void) {
 			.pWaitSemaphores = &semaphores[frame],
 			.swapchainCount = 1,
 			.pSwapchains = &swapchain,
-			.pImageIndices = &imageIndex
+			.pImageIndices = &swapchainImageIndex
 		});
-
 		frame = (frame + 1) % FRAMES_IN_FLIGHT;
 	}
 }
-
-int _fltused;

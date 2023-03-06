@@ -7,7 +7,7 @@ layout(location = 3) flat in uvec4 materialIndices;
 
 layout(location = 0) out vec4 oColor;
 
-layout(binding = 1) uniform sampler2D textures[25];
+layout(binding = 0) uniform sampler2D textures[25];
 
 void main() {
 	vec3 N = normalize(normal);
