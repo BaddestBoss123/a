@@ -1,4 +1,5 @@
 #pragma once
+
 #define FREE_LIST_INSERT(list, element) ({ \
 	int32_t index; \
 	if (list.firstFree == -1) { \
@@ -12,6 +13,7 @@
 	list.head = index; \
 	index; \
 })
+
 #define FREE_LIST_ITERATE(list, code) ({ \
 	int32_t idx = list.head; \
 	while (idx != -1) { \
@@ -20,6 +22,7 @@
 		idx = element->next; \
 	} \
 })
+
 #define FREE_LIST_ITERATE_REMOVABLE(list, code) ({ \
 	int32_t* idx = &list.head; \
 	while (*idx != -1) { \
@@ -28,6 +31,7 @@
 		idx = &element->next; \
 	} \
 })
+
 #define FREE_LIST_REMOVE(list) ({ \
 	int32_t temp = *idx; \
 	*idx = element->next; \

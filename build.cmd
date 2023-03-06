@@ -1,11 +1,14 @@
 @echo off
 setlocal enabledelayedexpansion
+
 set COMPILE_FLAGS=-fno-unwind-tables -fno-rtti -fno-asynchronous-unwind-tables -fno-exceptions -nostdlib -mcmodel=small -mavx2 -mfma -fenable-matrix -mno-stack-arg-probe -I%VULKAN_SDK%/Include -Ishaders -Wall
 set LINK_FLAGS=-Xlinker -stack:0x100000,0x100000 -Xlinker -subsystem:windows
 set WASM_COMPILE_FLAGS=--target=wasm32 -msimd128
 set WASM_LINK_FLAGS=-Wl,--no-entry,--export-dynamic,--allow-undefined
+
 if not exist build mkdir build
 if not exist ktx2 mkdir ktx2
+
 pushd shaders
 glslangValidator --target-env vulkan1.0 triangle.vert -V -o triangle.vert.spv
 glslangValidator --target-env vulkan1.0 triangle.vert -V --vn triangle_vert -o triangle.vert.h
@@ -42,6 +45,7 @@ spirv-dis shadow.vert.spv -o shadow.vert.spvasm
 spirv-as shaders.spvasm --target-env vulkan1.0 -o shaders.spv
 spirv-val shaders.spv
 popd
+
 clang src/asset_generator.c -g -o build/asset_generator.exe %COMPILE_FLAGS% %LINK_FLAGS%
 pushd build
 asset_generator.exe
@@ -51,8 +55,9 @@ move indices ../indices
 move vertices ../vertices
 move attributes ../attributes
 popd
-call ktx2.cmd
-del ktx2.cmd
-clang src/dwrite.cpp src/client.c -DCLIENT -Ofast -o build/client_speed.exe %COMPILE_FLAGS% %LINK_FLAGS%
-clang src/dwrite.cpp src/client.c -DCLIENT -Oz -o build/client_size.exe %COMPILE_FLAGS% %LINK_FLAGS%
+rem call ktx2.cmd
+rem del ktx2.cmd
+
+rem clang src/dwrite.cpp src/client.c -DCLIENT -Ofast -o build/client_speed.exe %COMPILE_FLAGS% %LINK_FLAGS%
+rem clang src/dwrite.cpp src/client.c -DCLIENT -Oz -o build/client_size.exe %COMPILE_FLAGS% %LINK_FLAGS%
 clang src/dwrite.cpp src/client.c -DCLIENT -g -o build/client_debug.exe %COMPILE_FLAGS% %LINK_FLAGS%

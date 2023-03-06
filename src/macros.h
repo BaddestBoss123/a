@@ -1,19 +1,27 @@
 #pragma once
+
 #define WASM_EXPORT __attribute__((visibility("default")))
+
 #define MEMBER_SIZE(type, member) sizeof(((type*)0)->member)
+
 #define BITS_SET(variable, bits) ((variable & (bits)) == (bits))
+
 #define MIN(a, b) ({ \
 	__auto_type _a = (a); \
 	__auto_type _b = (b); \
 	_a < _b ? _a : _b; \
 })
+
 #define MAX(a, b) ({ \
 	__auto_type _a = (a); \
 	__auto_type _b = (b); \
 	_a > _b ? _a : _b; \
 })
+
 #define CLAMP(x, low, high) MIN(MAX(x, low), high)
+
 #define ALIGN_FORWARD(value, alignment) ((alignment) > 0) ? ((value) + (alignment) - 1) & ~((alignment) - 1) : (value)
+
 #define STR2(x) #x
 #define STR(x) STR2(x)
 #ifdef _WIN32
@@ -37,14 +45,17 @@
     ); \
     extern __attribute__((aligned(16))) const char incbin_ ## name ## _start[]; \
     extern const char incbin_ ## name ## _end[]
+
 #define GROUP_COUNT(threadCount, localSize) ({ \
 	__auto_type _threadCount = (threadCount); \
 	__auto_type _localSize = (localSize); \
 	(threadCount + localSize - 1) / localSize; \
 })
+
 #define BEFORE_INSTANCE_FUNCS(F) \
 	F(vkEnumerateInstanceVersion) \
 	F(vkCreateInstance)
+
 #define INSTANCE_FUNCS(F) \
 	F(vkCreateDevice) \
 	F(vkCreateInstance) \
@@ -59,6 +70,7 @@
 	F(vkGetPhysicalDeviceSurfaceCapabilitiesKHR) \
 	F(vkGetPhysicalDeviceSurfaceFormatsKHR) \
 	F(vkGetPhysicalDeviceSurfaceSupportKHR)
+
 #define DEVICE_FUNCS(f) \
 	F(vkAcquireNextImageKHR) \
 	F(vkAllocateCommandBuffers) \

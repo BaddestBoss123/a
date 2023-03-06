@@ -2,10 +2,12 @@
 #include <windows.h>
 #include <dwrite.h>
 #include <d2d1.h>
+
 static IDWriteFactory* dwriteFactory;
 static IDWriteTextFormat* format;
 static ID2D1Factory* d2dFactory;
 static ID2D1DCRenderTarget* renderTarget;
+
 // static ID2D1StrokeStyle* strokeStyle;
 extern "C" void drawText(const WCHAR* text, UINT32 length, FLOAT maxWidth, FLOAT maxHeight) {
 	IDWriteTextLayout* textLayout;
