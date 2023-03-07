@@ -611,6 +611,18 @@ static LRESULT CALLBACK wndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 			pitch -= 0.0005f * (float)rawInput.data.mouse.lLastY;
 			yaw -= 0.0005f * (float)rawInput.data.mouse.lLastX;
 
+			pitch = CLAMP(pitch, -(float)M_PI * 0.4f, (float)M_PI * 0.3f);
+			yaw += (yaw > M_PI) ? -(float)M_PI * 2.f : (yaw < -M_PI) ? (float)M_PI * 2.f : 0.f;
+
+			float sp = sinf(pitch);
+			float cp = cosf(pitch);
+			float sy = sinf(yaw);
+			float cy = cosf(yaw);
+
+			camera.right = (Vec3){ cy, 0, -sy };
+			camera.up = (Vec3){ sy * sp, cp, cy * sp };
+			camera.forward = (Vec3){ sy * cp, -sp, cp * cy };
+
 			return DefWindowProcW(hWnd, msg, wParam, lParam);
 		} break;
 		case WM_KEYDOWN: {
@@ -688,6 +700,49 @@ static void CALLBACK messageFiberProc(LPVOID lpParameter) {
 		}
 
 		SwitchToFiber(mainFiber);
+	}
+}
+
+static void travelPortal(Vec3* origin, Vec3* velocity) {
+	if (vec3Length(*velocity) > 0.f) {
+		Vec3 direction = *velocity;
+
+		for (uint32_t i = 0; i < _countof(portals); i++) {
+			struct Portal* portal = &portals[i];
+			struct Portal* link = &portals[portal->link];
+
+			Vec3 normal = vec3TransformQuat((Vec3){ 0.f, 0.f, 1.f }, portal->rotation);
+			Vec4 plane = { normal.x, normal.y, normal.z, -vec3Dot(portal->translation, normal) };
+
+			float t = rayPlane(*origin, direction, plane);
+			if (t > 1.f || t < 0.f)
+				continue;
+
+			Vec3 hitPosition = vec3TransformQuat((*origin + direction * t) - portal->translation, quatConjugate(portal->rotation));
+			if (fabs(hitPosition.x) > portal->scale.x || fabs(hitPosition.y) > portal->scale.y)
+				continue;
+
+			Quat q = quatMultiply(link->rotation, quatConjugate(portal->rotation));
+
+			*origin = link->translation + vec3TransformQuat(*origin - portal->translation, q);
+			*velocity = vec3TransformQuat(*velocity, q);
+
+			float sinp = 2 * (q.w * q.y - q.z * q.x);
+			yaw += fabs(sinp) >= 1.f ? copysignf((float)M_PI * 0.5f, sinp) : asinf(sinp);
+
+			// clamp pitch/yaw again
+			pitch = CLAMP(pitch, -(float)M_PI * 0.4f, (float)M_PI * 0.3f);
+			yaw += (yaw > M_PI) ? -(float)M_PI * 2.f : (yaw < -M_PI) ? (float)M_PI * 2.f : 0.f;
+
+			float sp = sinf(pitch);
+			float cp = cosf(pitch);
+			float sy = sinf(yaw);
+			float cy = cosf(yaw);
+
+			camera.right = (Vec3){ cy, 0, -sy };
+			camera.up = (Vec3){ sy * sp, cp, cy * sp };
+			camera.forward = (Vec3){ sy * cp, -sp, cp * cy };
+		}
 	}
 }
 
@@ -1697,8 +1752,6 @@ void WinMainCRTStartup(void) {
 	audioClient->lpVtbl->GetBufferSize(audioClient, &audioBufferSize);
 	audioClient->lpVtbl->Start(audioClient);
 
-	Vec3 previousPlayerTranslation = { 0 }; // TODO: ugly
-
 	sendto(sock, (char*)&(struct ClientMessageID){
 		.clientID = -1,
 		.header = CLIENT_MESSAGE_ID
@@ -1760,6 +1813,7 @@ void WinMainCRTStartup(void) {
 				} break;
 			}
 		}
+
 		while (({
 			LARGE_INTEGER now;
 			QueryPerformanceCounter(&now);
@@ -1805,22 +1859,26 @@ void WinMainCRTStartup(void) {
 				player->velocity += player->speed * forwardMovement;
 				player->velocity += player->speed * sidewaysMovement;
 
-				previousPlayerTranslation = player->translation;
+				travelPortal(&player->translation, &player->velocity);
 				player->translation += player->velocity;
+
+				Quat pitchQuat = quatFromAxisAngle((Vec3){ 1.f, 0.f, 0.f }, -pitch);
+				Quat yawQuat = quatFromAxisAngle((Vec3){ 0.f, 1.f, 0.f }, -yaw);
+				player->rotation = quatMultiply(yawQuat, pitchQuat);
 
 				sendto(sock, (char*)&(struct ClientMessageUpdate){
 					.clientID = clientID,
 					.header = CLIENT_MESSAGE_UPDATE,
-					.x = entityMap[entityID].translation.x,
-					.y = entityMap[entityID].translation.y,
-					.z = entityMap[entityID].translation.z,
-					.rx = entityMap[entityID].rotation.x,
-					.ry = entityMap[entityID].rotation.y,
-					.rz = entityMap[entityID].rotation.z,
-					.rw = entityMap[entityID].rotation.w,
-					.sx = entityMap[entityID].scale.x,
-					.sy = entityMap[entityID].scale.y,
-					.sz = entityMap[entityID].scale.z
+					.x = player->translation.x,
+					.y = player->translation.y,
+					.z = player->translation.z,
+					.rx = player->rotation.x,
+					.ry = player->rotation.y,
+					.rz = player->rotation.z,
+					.rw = player->rotation.w,
+					.sx = player->scale.x,
+					.sy = player->scale.y,
+					.sz = player->scale.z
 				}, sizeof(struct ClientMessageUpdate), 0, (struct sockaddr*)&servaddr, sizeof(struct sockaddr_in));
 			}
 
@@ -1831,57 +1889,6 @@ void WinMainCRTStartup(void) {
 			Sleep(1);
 			continue;
 		}
-
-		if (entityID != -1) {
-			Quat pitchQuat = quatFromAxisAngle((Vec3){ 1.f, 0.f, 0.f }, -pitch); // if the camera intersected the portal, move/rotate it just for the render but not permanently
-			Quat yawQuat = quatFromAxisAngle((Vec3){ 0.f, 1.f, 0.f }, -yaw);
-			entityMap[entityID].rotation = quatMultiply(yawQuat, pitchQuat);
-
-			struct Entity* player = &entityMap[entityID];
-			Vec3 direction = player->translation - previousPlayerTranslation;
-			camera.position = vec3Lerp(previousPlayerTranslation, entityMap[entityID].translation, smoothFactor);
-
-			if (vec3Length(direction) > 0.f) {
-				direction = vec3Normalize(direction);
-				for (uint32_t i = 0; i < _countof(portals); i++) {
-					struct Portal* portal = &portals[i];
-					struct Portal* link = &portals[portal->link];
-
-					Vec3 normal = vec3TransformQuat((Vec3){ 0.f, 0.f, 1.f }, portal->rotation);
-					Vec4 plane = { normal.x, normal.y, normal.z, -vec3Dot(portal->translation, normal) };
-
-					float t = rayPlane(previousPlayerTranslation, direction, plane);
-					if (t > 1.f || t < 0.f)
-						continue;
-
-					Vec3 hitPosition = vec3TransformQuat((previousPlayerTranslation + direction * t) - portal->translation, quatConjugate(portal->rotation));
-					if (fabs(hitPosition.x) > portal->scale.x || fabs(hitPosition.y) > portal->scale.y)
-						continue;
-
-					OutputDebugStringA("teleporting\n");
-
-					Quat q = quatMultiply(link->rotation, quatConjugate(portal->rotation));
-					camera.position = link->translation + vec3TransformQuat(camera.position - portal->translation, q);
-					float sinp = 2 * (q.w * q.y - q.z * q.x);
-					yaw -= fabs(sinp) >= 1.f ? copysignf((float)M_PI * 0.5f, sinp) : asinf(sinp);
-
-					player->translation = camera.position;
-					break;
-				}
-			}
-		}
-
-		pitch = CLAMP(pitch, -(float)M_PI * 0.4f, (float)M_PI * 0.3f);
-		yaw += (yaw > M_PI) ? -(float)M_PI * 2.f : (yaw < -M_PI) ? (float)M_PI * 2.f : 0.f;
-
-		float sp = sinf(pitch);
-		float cp = cosf(pitch);
-		float sy = sinf(yaw);
-		float cy = cosf(yaw);
-
-		camera.right = (Vec3){ cy, 0, -sy };
-		camera.up = (Vec3){ sy * sp, cp, cy * sp };
-		camera.forward = (Vec3){ sy * cp, -sp, cp * cy };
 
 		// Vec3 sunDirection = vec3Normalize((Vec3){ 0.36f, 0.8f, 0.48f });
 		// Mat4 ortho = mat4Ortho(-50.f, 50.f, -50.f, 50.f, 1.f, 100.f);
@@ -2018,7 +2025,26 @@ void WinMainCRTStartup(void) {
 			.pClearValues = (VkClearValue[]){ { 0 }, { 0 } }
 		}, VK_SUBPASS_CONTENTS_INLINE);
 
+		if (entityID != -1) {
+			camera.position = entityMap[entityID].translation;
+			Vec3 velocity = entityMap[entityID].velocity * smoothFactor;
+
+			float oldYaw = yaw;
+			travelPortal(&camera.position, &velocity);
+			camera.position += velocity;
+			yaw = oldYaw;
+		}
+
 		drawScene(commandBuffers[frame], camera, (Vec4){ 0 }, 0, -1);
+
+		float sp = sinf(pitch);
+		float cp = cosf(pitch);
+		float sy = sinf(yaw);
+		float cy = cosf(yaw);
+
+		camera.right = (Vec3){ cy, 0, -sy };
+		camera.up = (Vec3){ sy * sp, cp, cy * sp };
+		camera.forward = (Vec3){ sy * cp, -sp, cp * cy };
 
 		vkCmdEndRenderPass(commandBuffers[frame]);
 
